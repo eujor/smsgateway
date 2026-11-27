@@ -157,7 +157,7 @@ The POST JSON body contains `device_id`, `device_name`, `app_version`, `android_
 
 `GET /api/v1/agent/jobs/next?device_id=<UUID>&wait_seconds=20&limit=20`
 
-This is short HTTPS long-polling. Return HTTP 204 if there is no job, or HTTP 200:
+This is HTTPS long-polling. When no job is available, return either HTTP 204 with no response body or HTTP 200 with JSON `{"jobs":[]}`. Never return an empty HTTP 200 body, an HTML page, or a method-error response for this GET request. For a job, return HTTP 200 with one `job` object or a `jobs` array containing up to 20 job objects:
 ```json
 {
   "job": {
@@ -173,7 +173,7 @@ This is short HTTPS long-polling. Return HTTP 204 if there is no job, or HTTP 20
 }
 ```
 
-Return jobs only for the authenticated device. Return either one legacy `job` object or a `jobs` array containing up to 20 jobs so Android can buffer request bursts locally. Jobs need unique IDs, expiry, idempotency keys and a lease/acknowledgement strategy. Do not blindly redeliver chargeable operations. The Android client persists requests in an encrypted SQLite queue, deduplicates by both `job_id` and `request_id`, and executes one telephony operation at a time.
+Return jobs only for the authenticated device. Return either one legacy `job` object or a `jobs` array containing up to 20 jobs so Android can buffer request bursts locally. Jobs need unique IDs, expiry, idempotency keys and a lease/acknowledgement strategy. Do not blindly redeliver chargeable operations. The Android client persists requests in an encrypted SQLite queue, deduplicates by both `job_id` and `request_id`, and executes one telephony operation at a time. The Android agent waits at least 5 seconds between successful polls if the receiver responds immediately. Failed or malformed poll responses trigger exponential retry backoff (5, 10, 20, 40, then 60 seconds) rather than a tight request loop.
 
 ## 8. SMS job
 
