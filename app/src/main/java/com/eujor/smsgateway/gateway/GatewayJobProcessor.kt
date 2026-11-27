@@ -13,7 +13,7 @@ import com.eujor.smsgateway.telephony.UssdExecutor
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class JobProcessOutcome { FINISHED, WAITING_FOR_USSD, FAILED }
+enum class JobProcessOutcome { FINISHED, WAITING_FOR_SMS, WAITING_FOR_USSD, FAILED }
 
 object GatewayJobProcessor {
     fun process(context: Context, config: AppConfig, job: JSONObject): JobProcessOutcome {
@@ -46,6 +46,7 @@ object GatewayJobProcessor {
                         "SMS permission has not been granted on this device."
                     }
                     SmsExecutor.send(context, config, jobId, requestId, to, message, simSlot)
+                    return JobProcessOutcome.WAITING_FOR_SMS
                 }
                 type == "ussd" && action == "execute" -> {
                     val code = job.optString("code")

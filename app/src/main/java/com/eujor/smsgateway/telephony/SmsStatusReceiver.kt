@@ -21,6 +21,7 @@ class SmsStatusReceiver : BroadcastReceiver() {
             delivery -> "delivery_report_failed"
             else -> "send_failed"
         }
+        if (!delivery) SmsOperationState.finish(jobId, status)
         LogStore.append(context, "SMS " + status + " for " + mask(recipient) + ".")
         val pending = goAsync()
         Thread {

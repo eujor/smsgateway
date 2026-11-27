@@ -12,6 +12,8 @@ import org.json.JSONObject
 
 object SmsExecutor {
     fun send(context: Context, config: AppConfig, jobId: String, requestId: String, recipient: String, message: String, simSlot: Int) {
+        SmsOperationState.begin(jobId)
+        try {
         val manager = smsManager(context, simSlot)
         val sentIntent = PendingIntent.getBroadcast(
             context, requestId.hashCode(),
@@ -35,6 +37,10 @@ object SmsExecutor {
             GatewayApi.postResult(config, jobId, requestId, "sms", "accepted",
                 JSONObject().put("recipient", recipient).put("sim_slot", simSlot))
         }.onFailure { LogStore.append(context, "SMS acceptance report could not be queued.") }
+        } catch (e: Exception) {
+            SmsOperationState.finish(jobId, "send_failed")
+            throw e
+        }
     }
 
     @Suppress("DEPRECATION")

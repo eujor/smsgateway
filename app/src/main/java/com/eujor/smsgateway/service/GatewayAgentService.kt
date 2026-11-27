@@ -18,6 +18,7 @@ import com.eujor.smsgateway.gateway.LocalJobQueue
 import com.eujor.smsgateway.gateway.QueueInsertResult
 import com.eujor.smsgateway.gateway.QueuedGatewayJob
 import com.eujor.smsgateway.telephony.UssdChainState
+import com.eujor.smsgateway.telephony.SmsOperationState
 
 class GatewayAgentService : Service() {
     @Volatile private var running = false
@@ -51,7 +52,7 @@ class GatewayAgentService : Service() {
     private fun agentLoop() {
         val queue = LocalJobQueue(this)
         queue.recoverInterrupted()
-        var activeUssdJob: QueuedGatewayJob? = null
+        var activeJob: QueuedGatewayJob? = null
         var lastHeartbeat = 0L
         var registeredDeviceId = ""
         var lastErrorLog = 0L
@@ -80,7 +81,7 @@ class GatewayAgentService : Service() {
                         lastHeartbeat = System.currentTimeMillis()
                     }
 
-                    if (activeUssdJob != null && !UssdChainState.isActive()) {
+                    if (activeJob != null && activeJob.type == "ussd" && !UssdChainState.isActive()) {
                         val reason = UssdChainState.endReason
                         val finalStatus = when (reason) {
                             "timeout" -> "timed_out"
@@ -89,32 +90,47 @@ class GatewayAgentService : Service() {
                             else -> "completed"
                         }
                         queue.markFinished(
-                            activeUssdJob.jobId,
+                            activeJob.jobId,
                             finalStatus,
                             if (reason == "timeout") "USSD session timed out." else ""
                         )
                         if (reason == "timeout") {
-                            GatewayApi.postResult(
-                                config, activeUssdJob.jobId, activeUssdJob.requestId, "ussd", "timeout"
-                            )
+                            GatewayApi.postResult(config, activeJob.jobId, activeJob.requestId, "ussd", "timeout")
                             LogStore.append(this, "USSD session timed out; next queued request may proceed.")
                         }
-                        activeUssdJob = null
+                        activeJob = null
                     }
 
-                    if (activeUssdJob != null) {
-                        val controlJob = queue.nextQueued(activeUssdJob.requestId)
-                        if (controlJob != null) {
-                            runQueuedJob(queue, config, controlJob)
-                            continue
+                    if (activeJob != null && activeJob.type == "sms") {
+                        val smsStatus = SmsOperationState.consumeResult(activeJob.jobId)
+                        if (smsStatus != null) {
+                            val finalStatus = if (smsStatus == "sent") "completed" else "failed"
+                            queue.markFinished(activeJob.jobId, finalStatus, if (finalStatus == "failed") smsStatus else "")
+                            activeJob = null
                         }
+                    }
+
+                    if (activeJob != null) {
+                        if (activeJob.type == "ussd") {
+                            val controlJob = queue.nextQueued(activeJob.requestId)
+                            if (controlJob != null) {
+                                runQueuedJob(queue, config, controlJob)
+                                continue
+                            }
+                        }
+                        enqueueRemoteJobs(queue, config)
+                        continue
+                    }
+
+                    // A manually triggered SMS also holds the telephony slot while Android resolves its send result.
+                    if (SmsOperationState.hasActiveOperation()) {
                         enqueueRemoteJobs(queue, config)
                         continue
                     }
 
                     val queuedJob = queue.nextQueued()
                     if (queuedJob != null) {
-                        runQueuedJob(queue, config, queuedJob) { activeUssdJob = it }
+                        runQueuedJob(queue, config, queuedJob) { activeJob = it }
                         continue
                     }
 
@@ -145,9 +161,9 @@ class GatewayAgentService : Service() {
     ) {
         if (!queue.markProcessing(queued.jobId)) return
         when (GatewayJobProcessor.process(this, config, queued.payload)) {
-            JobProcessOutcome.WAITING_FOR_USSD -> {
+            JobProcessOutcome.WAITING_FOR_USSD, JobProcessOutcome.WAITING_FOR_SMS -> {
                 if (onWaitingForUssd == null) {
-                    queue.markFinished(queued.jobId, "failed", "Unexpected USSD session while another session was active.")
+                    queue.markFinished(queued.jobId, "failed", "Unexpected telephony session while another session was active.")
                     UssdChainState.finish("failed")
                 } else {
                     onWaitingForUssd(queued)
