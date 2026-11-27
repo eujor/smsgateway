@@ -715,10 +715,10 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
                     onValueChange = { heartbeatUrl = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Complete heartbeat URL") },
-                    placeholder = { Text("https://example.com/heartbeat.php") },
+                    placeholder = { Text("https://example.com/heartbeat") },
                     singleLine = true
                 )
-                Text("Enter the complete endpoint, including any PHP filename or path. The app sends POST to this exact URL and never appends a path or falls back to the receiver URL.", style = MaterialTheme.typography.bodySmall)
+                Text("Enter the complete HTTPS endpoint URL. The app sends POST to this exact URL and never appends a path or falls back to the receiver URL.", style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it },
@@ -759,7 +759,7 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
                     TextButton(onClick = { showKey = !showKey }) { Text(if (showKey) "Hide" else "Show") }
                 }
                 Text(
-                    "Generate a unique key here, then register the same key for this device in your receiver server. Generate a new key to rotate it.",
+                    "Generate a unique key here, then configure the same key for this device in your receiver server. Generate a new key to rotate it.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 OutlinedTextField(deviceName, { deviceName = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Device name") }, singleLine = true)
