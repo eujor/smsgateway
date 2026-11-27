@@ -3,6 +3,10 @@ package com.eujor.smsgateway.ui
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.util.Base64
+import android.widget.Toast
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -28,6 +32,7 @@ import androidx.core.content.ContextCompat
 import com.eujor.smsgateway.BuildConfig
 import com.eujor.smsgateway.data.AppConfig
 import com.eujor.smsgateway.data.LogStore
+import com.eujor.smsgateway.data.DailyMaintenance
 import com.eujor.smsgateway.data.SecureConfigStore
 import com.eujor.smsgateway.gateway.GatewayApi
 import com.eujor.smsgateway.gateway.GatewayRequest
@@ -37,6 +42,7 @@ import com.eujor.smsgateway.service.GatewayAgentService
 import com.eujor.smsgateway.telephony.*
 import org.json.JSONObject
 import java.util.UUID
+import java.security.SecureRandom
 import java.util.concurrent.Executors
 import kotlinx.coroutines.delay
 
@@ -105,6 +111,19 @@ fun GatewayApp() {
                         }
                         SmsExecutor.send(context, config, request.jobId, request.requestId, request.recipient, request.message, request.simSlot)
                     }
+                    request.type == "ussd" && request.action == "interactive" -> {
+                        check(!UssdChainState.isActive()) { "Another USSD session is already active. Finish it before starting another." }
+                        check(ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            "Grant Phone permission from Home before testing USSD."
+                        }
+                        check(UssdAccessibilityService.isEnabled(context)) {
+                            "Enable EUJOR USSD Session Assistant from Home so the app can display the live USSD screen."
+                        }
+                        UssdChainState.begin(request.requestId, request.jobId, request.simSlot, request.inputs)
+                        UssdResultStore.update("Opening the carrier USSD screen...")
+                        UssdExecutor.startInteractive(context, request.ussdCode, request.simSlot)
+                        LogStore.append(context, "Quick USSD test opened a visible USSD session; input values redacted.")
+                    }
                     request.type == "ussd" && request.action == "continue" -> {
                         check(UssdChainState.matches(request.sessionId)) { "No active USSD session matches this session_id." }
                         UssdAccessibilityService.submitInput(request.sessionId, request.inputs.first())
@@ -112,7 +131,7 @@ fun GatewayApp() {
                             JSONObject().put("session_id", request.sessionId))
                     }
                     request.type == "ussd" && request.action == "cancel" -> {
-                        UssdChainState.clear()
+                        UssdChainState.finish("cancelled")
                         UssdResultStore.finish("USSD session cancelled.")
                         GatewayApi.postResult(config, request.jobId, request.requestId, "ussd", "cancelled", JSONObject())
                     }
@@ -141,6 +160,7 @@ fun GatewayApp() {
                     refreshLogs()
                 }
             } catch (e: Exception) {
+                if (UssdChainState.matches(request.requestId)) UssdChainState.finish("failed")
                 LogStore.append(context, "Manual trigger failed: " + (e.message ?: "unknown error"))
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     activityStatus = e.message ?: "Manual trigger failed."
@@ -156,6 +176,7 @@ fun GatewayApp() {
     }
 
     LaunchedEffect(Unit) {
+        DailyMaintenance.runIfDue(context)
         while (true) {
             ussdResponse = UssdResultStore.latest
             delay(700)
@@ -278,10 +299,19 @@ private fun HomeScreen(
         add(Manifest.permission.READ_PHONE_STATE)
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
     }
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
-    val granted = permissions.count {
-        ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    var permissionRefresh by remember { mutableIntStateOf(0) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        permissionRefresh++
     }
+    val refreshKey = permissionRefresh
+    fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(context, permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    val granted = permissions.count { hasPermission(it) }
+    val smsSendGranted = hasPermission(Manifest.permission.SEND_SMS)
+    val smsReceiveGranted = hasPermission(Manifest.permission.RECEIVE_SMS)
+    val phoneGranted = hasPermission(Manifest.permission.CALL_PHONE)
+    val phoneStateGranted = hasPermission(Manifest.permission.READ_PHONE_STATE)
+    val notificationsGranted = Build.VERSION.SDK_INT < 33 || hasPermission(Manifest.permission.POST_NOTIFICATIONS)
     val batteryAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         (context.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(context.packageName)
     } else true
@@ -305,9 +335,9 @@ private fun HomeScreen(
         }
         StatusCard("Receiver server", serverStatus, Icons.Filled.Cloud)
         StatusCard("Device identity", config.deviceName + "\n" + config.deviceId, Icons.Filled.Devices)
-        StatusCard("Runtime permissions", "$granted of ${permissions.size} granted", Icons.Filled.Security)
-        StatusCard("USSD accessibility", if (accessibility) "Enabled" else "Needs activation", Icons.Filled.PhoneAndroid)
-        StatusCard("Battery optimisation", if (batteryAllowed) "Exemption active" else "May restrict background service", Icons.Filled.BatteryChargingFull)
+        StatusCard("Runtime permissions", "$granted of ${permissions.size} granted", Icons.Filled.Security, granted == permissions.size)
+        StatusCard("USSD accessibility", if (accessibility) "Enabled" else "Needs activation", Icons.Filled.PhoneAndroid, accessibility)
+        StatusCard("Battery optimisation", if (batteryAllowed) "Exemption active" else "May restrict background service", Icons.Filled.BatteryChargingFull, batteryAllowed)
 
         Card {
             Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -333,6 +363,21 @@ private fun HomeScreen(
                 ) { Text("Allow background operation (battery)") }
                 OutlinedButton(onClick = onCheckServer, modifier = Modifier.fillMaxWidth()) { Text("Test receiver server") }
                 OutlinedButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) { Text("Configure server URL and device key") }
+                Divider()
+                Text("Permission status", fontWeight = FontWeight.Bold)
+                PermissionStatusRow("Send SMS", smsSendGranted)
+                PermissionStatusRow("Receive SMS", smsReceiveGranted)
+                PermissionStatusRow("Phone / USSD", phoneGranted)
+                PermissionStatusRow("SIM information", phoneStateGranted)
+                if (Build.VERSION.SDK_INT >= 33) PermissionStatusRow("Notifications", notificationsGranted)
+                PermissionStatusRow("USSD accessibility", accessibility)
+                PermissionStatusRow("Battery exemption", batteryAllowed)
+            }
+        }
+        Card {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("Sensitive access notice", fontWeight = FontWeight.Bold)
+                Text("Incoming SMS messages are forwarded only to the HTTPS receiver you configure. The optional USSD assistant reads the visible carrier USSD window only while a USSD session is active, so it can display prompts and enter responses you provide.")
             }
         }
         Text("Latest activity: " + activityStatus, style = MaterialTheme.typography.bodyMedium)
@@ -342,16 +387,50 @@ private fun HomeScreen(
 }
 
 @Composable
-private fun StatusCard(title: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    Card {
+private fun StatusCard(
+    title: String,
+    value: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    allowed: Boolean? = null
+) {
+    val statusColor = when (allowed) {
+        true -> androidx.compose.ui.graphics.Color(0xFF16803C)
+        false -> androidx.compose.ui.graphics.Color(0xFFB3261E)
+        null -> MaterialTheme.colorScheme.secondary
+    }
+    val background = when (allowed) {
+        true -> androidx.compose.ui.graphics.Color(0xFFE8F5E9)
+        false -> androidx.compose.ui.graphics.Color(0xFFFFEBEE)
+        null -> MaterialTheme.colorScheme.surface
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = background)) {
         Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(27.dp))
+            Icon(icon, null, tint = statusColor, modifier = Modifier.size(27.dp))
             Spacer(Modifier.size(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.labelLarge)
-                Text(value, style = MaterialTheme.typography.bodyMedium)
+                Text(value, style = MaterialTheme.typography.bodyMedium, color = statusColor)
             }
         }
+    }
+}
+
+@Composable
+private fun PermissionStatusRow(label: String, allowed: Boolean) {
+    val color = if (allowed) androidx.compose.ui.graphics.Color(0xFF16803C)
+        else androidx.compose.ui.graphics.Color(0xFFB3261E)
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            if (allowed) Icons.Filled.CheckCircle else Icons.Filled.Cancel,
+            contentDescription = null,
+            tint = color
+        )
+        Spacer(Modifier.size(9.dp))
+        Text(label, modifier = Modifier.weight(1f))
+        Text(if (allowed) "Allowed" else "Not allowed", color = color, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -428,7 +507,7 @@ private fun ToolsScreen(
                     val chain = inputs.lines().filter { it.isNotBlank() }
                     isValid = true
                     validation = "USSD test starting..."
-                    onTrigger(GatewayRequest(id, id, "ussd", "execute", slot.toIntOrNull() ?: 1, ussdCode = ussd, inputs = chain))
+                    onTrigger(GatewayRequest(id, id, "ussd", "interactive", slot.toIntOrNull() ?: 1, ussdCode = ussd, inputs = chain))
                 }
             },
             modifier = Modifier.fillMaxWidth()
@@ -439,8 +518,11 @@ private fun ToolsScreen(
         }
         if (latestUssdResult.isNotBlank()) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                Column(Modifier.padding(13.dp)) {
-                    Text("Latest USSD screen / response", fontWeight = FontWeight.Bold)
+                Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Latest USSD screen / response", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { UssdResultStore.clear() }) { Text("Clear") }
+                    }
                     Text(latestUssdResult)
                 }
             }
@@ -486,12 +568,13 @@ private fun RequirementsScreen() {
     val context = androidx.compose.ui.platform.LocalContext.current
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Requirements & protocol", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        RequirementCard("Application", "Version ${BuildConfig.VERSION_NAME}\nMinimum Android: Android 8.0 Oreo (API 26)\nCompile SDK: 36\nTarget SDK: 36\nDevice identity: app-generated UUID; IMEI/IMSI not required.")
+        RequirementCard("Application", "Version ${BuildConfig.VERSION_NAME} (version code ${BuildConfig.VERSION_CODE})\nMinimum Android: Android 8.0 Oreo (API 26)\nCompile SDK: 36\nTarget SDK: 36\nDevice identity: app-generated UUID; IMEI/IMSI not required.")
         RequirementCard("Permissions", "SMS send: SEND_SMS\nIncoming SMS: RECEIVE_SMS\nUSSD / call chain: CALL_PHONE\nSIM selection: READ_PHONE_STATE\nBackground agent: foreground service and notifications\nMulti-step USSD: enable EUJOR USSD Session Assistant in Android Accessibility settings.")
         RequirementCard("Server → app input", "SMS: type=sms, action=send, to and message. USSD: type=ussd, action=execute and code. Optional sim_slot is 1-based. Optional inputs is an array of strings entered as prompts appear. Server-driven continuation uses action=continue with session_id and input.")
         RequirementCard("App → server output", "Result fields: protocol_version, device_id, job_id, request_id, type, status, result and timestamp. SMS distinguishes accepted, sent, delivered and failure statuses. USSD reports completed, failed, screen_updated, input_submitted or input_queued.")
         RequirementCard("USSD modes", "Direct mode uses TelephonyManager.sendUssdRequest() for a single request and response. Chained mode opens the visible carrier USSD dialog and uses accessibility to enter queued responses. The server can also send another input after receiving a menu response. OEM and carrier behaviour varies.")
-        RequirementCard("Security", "HTTPS only. Per-device bearer key encrypted with Android Keystore AES-GCM. UUID device ID; no IMEI/IMSI. Avoid storing SIM PINs or mobile-money PINs in sample JSON. Inputs are excluded from local logs.")
+        RequirementCard("Security", "HTTPS only. Per-device bearer key encrypted with Android Keystore AES-GCM. The app can generate a random 256-bit device key; register the same key with the receiver server. UUID device ID; no IMEI/IMSI. Queue payloads are encrypted at rest. Avoid storing SIM PINs or mobile-money PINs in sample JSON. Inputs are excluded from local logs.")
+        RequirementCard("Installation notice", "This app requests SMS and optional Accessibility capabilities for its core gateway functions. Google Play Protect may block installations from internet-sideloading sources when RECEIVE_SMS and Accessibility are declared. Install only builds from the trusted EUJOR repository; keep device protection enabled whenever possible.")
         LinkButton("Open API protocol documentation") {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/eujor/smsgateway/blob/main/docs/API_PROTOCOL.md")))
         }
@@ -531,19 +614,59 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
     var deviceName by remember { mutableStateOf(initial.deviceName) }
     var showKey by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Gateway settings") },
         text = {
-            Column(Modifier.fillMaxWidth().height(455.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.fillMaxWidth().height(520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(server, { server = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Receiver server URL") }, placeholder = { Text("https://gateway.example.com") }, singleLine = true)
                 Text("Enter the base URL, not an API path. Remote connections require HTTPS.", style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
-                    apiKey, { apiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Device API key") },
-                    singleLine = true, visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation()
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Device API key") },
+                    singleLine = true,
+                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        Row {
+                            IconButton(onClick = { showKey = !showKey }) {
+                                Icon(
+                                    if (showKey) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                    contentDescription = if (showKey) "Hide API key" else "Show API key"
+                                )
+                            }
+                            IconButton(onClick = {
+                                if (apiKey.isNotBlank()) {
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("Device API key", apiKey))
+                                    Toast.makeText(context, "Device API key copied.", Toast.LENGTH_SHORT).show()
+                                } else error = "Generate or enter a device API key first."
+                            }) {
+                                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy API key")
+                            }
+                        }
+                    }
                 )
-                TextButton(onClick = { showKey = !showKey }) { Text(if (showKey) "Hide key" else "Show key") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        val bytes = ByteArray(32)
+                        SecureRandom().nextBytes(bytes)
+                        apiKey = Base64.encodeToString(
+                            bytes,
+                            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+                        )
+                        error = ""
+                        showKey = false
+                    }) { Text("Generate key") }
+                    TextButton(onClick = { showKey = !showKey }) { Text(if (showKey) "Hide" else "Show") }
+                }
+                Text(
+                    "Generate a unique key here, then register the same key for this device in your receiver server. Generate a new key to rotate it.",
+                    style = MaterialTheme.typography.bodySmall
+                )
                 OutlinedTextField(deviceName, { deviceName = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Device name") }, singleLine = true)
                 OutlinedTextField(deviceId, { deviceId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Device ID (UUID)") }, singleLine = true)
                 TextButton(onClick = { deviceId = UUID.randomUUID().toString() }) { Text("Generate new device ID") }
