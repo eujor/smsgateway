@@ -4,6 +4,7 @@ All notable changes are documented here.
 
 ## [2.0.0] - 2026-11-28
 
+- Fixed rapid empty-response GET polling: accept only valid HTTP 204 or JSON job responses, enforce a 5-second minimum poll interval, and apply exponential backoff up to 60 seconds after failures.
 - Added strict USSD callback forwarding: only USSD activity initiated by the app or by server-triggered USSD jobs is reported; ordinary incoming SMS is never forwarded.
 - Added a Home-screen frame listing finished USSD callbacks awaiting receiver acknowledgement, with status, job/request IDs and retry count.
 - Added an individual Kill control to cancel future retries of each unconfirmed finished USSD callback.
