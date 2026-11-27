@@ -15,13 +15,13 @@ Never reuse or expose the Android device key to a requesting application. Never 
 
 - HTTPS only, with normal TLS certificate and hostname validation.
 - UTF-8 JSON using `application/json`.
-- Every device has a unique per-device bearer API key and an app-generated UUIDv7 (time-ordered UUID). Existing registered device IDs remain unchanged when upgrading. Receiver-generated `job_id` and `request_id` values SHOULD also use UUIDv7 rather than auto-incrementing integers; the Android agent preserves the server-supplied IDs exactly. Callback `event_id` values are generated as UUIDv7. The Android app can generate a cryptographically random 256-bit key locally; register that exact key for the device in the receiver server before connecting. A server may alternatively issue a key for the user to paste into the app.
+- Every device has a unique per-device bearer API key and an app-generated UUIDv7 (time-ordered UUID). Existing device IDs remain unchanged when upgrading. Receiver-generated `job_id` and `request_id` values SHOULD also use UUIDv7 rather than auto-incrementing integers; the Android agent preserves the server-supplied IDs exactly. Callback `event_id` values are generated as UUIDv7. The Android app can generate a cryptographically random 256-bit key locally; configure that exact key and the device UUID in the receiver server before connecting. The Android app does not send a device-registration request. A server may alternatively issue a key for the user to paste into the app.
 - Do not use IMEI or IMSI as device identity.
 - Authenticated device requests include:
   - `Authorization: Bearer <DEVICE_API_KEY>`
   - `X-Device-ID: <DEVICE_UUID>`
   - `Accept: application/json`
-- Bind each key to one approved device and its allowed capabilities. Support key rotation and revocation.
+- Bind each key to one configured device and its allowed capabilities. Support key rotation and revocation.
 
 ## 3. Requesting application API
 
@@ -130,36 +130,9 @@ Example callback:
 
 Sign callbacks with an application-specific HMAC-SHA256 secret and include a timestamp and unique event ID. The receiver and requesting application should reject stale timestamps and duplicate event IDs. The requesting application must verify the signature before trusting a callback.
 
-## 4. Device registration
+## 4. Device identity and authentication
 
-`POST /api/v1/agent/devices/register`
-
-Authenticated with the device API key.
-
-Input:
-```json
-{
-  "protocol_version": "1",
-  "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
-  "device_name": "Office Safaricom",
-  "app_version": "2.0.0",
-  "android_version": "15",
-  "android_sdk": 35,
-  "capabilities": ["sms.send", "sms.sent_report", "sms.delivery_report", "ussd.execute", "ussd.chain", "ussd.continue"]
-}
-```
-
-Expected HTTP 200/201:
-```json
-{
-  "success": true,
-  "device_status": "approved",
-  "server_time": "2026-11-27T14:00:00Z",
-  "heartbeat_interval": 60
-}
-```
-
-The server may respond with `pending` or `revoked`; those devices must not receive jobs. Verify the device ID agrees with the key registration.
+The Android app does not call a device-registration endpoint. Before connecting, configure the app-generated device UUID and its per-device bearer API key in the receiver server using the receiver's own administration or provisioning process. Authenticate every device request with `Authorization: Bearer <DEVICE_API_KEY>` and `X-Device-ID: <DEVICE_UUID>`. Verify that the supplied key is authorised for that exact UUID and the requested operation. The app sends these headers with health checks, job polling and result callbacks; it does not send a registration payload.
 
 ## 5. Receiver server health check
 
@@ -308,8 +281,8 @@ Use meaningful HTTP status codes and:
 {
   "success": false,
   "error": {
-    "code": "DEVICE_NOT_APPROVED",
-    "message": "This device is not approved to receive jobs."
+    "code": "INVALID_DEVICE_CREDENTIALS",
+    "message": "The device API key or device ID is invalid or not authorised."
   }
 }
 ```
