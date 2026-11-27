@@ -161,27 +161,24 @@ Expected HTTP 200/201:
 
 The server may respond with `pending` or `revoked`; those devices must not receive jobs. Verify the device ID agrees with the key registration.
 
-## 5. Health check
+## 5. Receiver server health check
 
-`GET /api/v1/agent/health` (authenticated with the device key). Return HTTP 200:
+`GET /api/v1/agent/health` is an endpoint hosted by the **receiver server**. The Android app sends this GET request when the user selects **Test Connection**. It checks whether the receiver server responds; it does not check the Android app's reachability and is not an inbound endpoint on the phone.
+
+The receiver should authenticate the device key and return HTTP 200:
 ```json
 {"success": true, "protocol_version": "1", "server_time": "2026-11-27T14:00:00Z"}
 ```
 
-## 6. Device heartbeat
+The `/api/v1/` prefix identifies the receiver-agent API protocol version. It is independent of the Android app release number (for example, app version 2.0.0). Do not change the route merely because a new app version is released. Change the API prefix only when a deliberately incompatible API protocol is introduced and documented.
 
-`POST /api/v1/agent/devices/heartbeat`
-```json
-{
-  "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
-  "device_name": "Office Safaricom",
-  "app_version": "1.0.0-alpha01",
-  "android_sdk": 35,
-  "timestamp": "2026-11-27T14:01:00Z"
-}
-```
+## 6. Optional app-to-server heartbeat
 
-Return HTTP 200 with a JSON acknowledgement. Heartbeat is optional and can be enabled or disabled in app Settings. When enabled, the app sends POST approximately every 60 seconds to the complete HTTPS URL entered in the dedicated Heartbeat URL field. The app uses that URL exactly as entered: it does not append a path and never derives it from or sends it to the receiver/SMS server URL. The heartbeat body contains device_id, device_name, app_version, android_sdk and timestamp. The endpoint updates last_seen/online status and lets the server detect offline devices. It is not a USSD or SMS event.
+There is **no fixed heartbeat route** in this protocol. The receiver developer chooses and implements the endpoint URL, which may be a PHP file or any HTTPS path, for example `https://example.com/gateway-heartbeat.php`.
+
+The user enters that complete URL in the app's **Heartbeat URL** setting. When heartbeat is enabled, the Android app sends a POST approximately every 60 seconds to that exact URL. It does not append `/api/v1/agent/devices/heartbeat`, derive the URL from the receiver URL, or send heartbeat requests to the SMS/result receiver URL unless the user explicitly enters the same URL.
+
+The POST JSON body contains `device_id`, `device_name`, `app_version`, `android_sdk` and `timestamp`. The receiver endpoint should authenticate the device key, validate the device ID, update its last-seen/online record, and return HTTP 200 with a JSON acknowledgement. Heartbeat is optional, can be switched off in Settings, and is not an SMS or USSD result event.
 
 ## 7. Device job polling
 
