@@ -1,0 +1,183 @@
+name: Publish versioned release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-release.yml"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag, for example v1.0.1"
+        required: true
+        type: string
+      target_sha:
+        description: "Commit SHA to tag"
+        required: true
+        type: string
+      artifact_run_id:
+        description: "Successful Android build workflow run ID containing eujor-smsgateway-debug"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Select release details
+        id: release
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "tag_name=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "target_sha=${{ inputs.target_sha }}" >> "$GITHUB_OUTPUT"
+            echo "artifact_run_id=${{ inputs.artifact_run_id }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_name=v1.0.0" >> "$GITHUB_OUTPUT"
+            echo "target_sha=04d50fd3a5d77a5f79e531b5fa0f5b7adda4e73f" >> "$GITHUB_OUTPUT"
+            echo "artifact_run_id=46036742201" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download successful Android build artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: eujor-smsgateway-debug
+          path: downloaded-artifact
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.release.outputs.artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare release APK
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          APK="$(find downloaded-artifact -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          mkdir -p release-assets
+          cp "$APK" "release-assets/EUJOR-SMS-USSD-Gateway-${RELEASE_TAG}.apk"
+          test -s "release-assets/EUJOR-SMS-USSD-Gateway-${RELEASE_TAG}.apk"
+
+      - name: Create annotated version tag, GitHub Release and attach APK
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          TARGET_SHA: ${{ steps.release.outputs.target_sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const tagName = process.env.RELEASE_TAG;
+            const targetSha = process.env.TARGET_SHA;
+            const { owner, repo } = context.repo;
+
+            if (!/^v\\d+\\.\\d+\\.\\d+$/.test(tagName)) {
+              throw new Error('Release tag must use semantic version format, e.g. v1.0.1.');
+            }
+
+            const commit = await github.rest.git.getCommit({ owner, repo, commit_sha: targetSha });
+            if (commit.data.sha !== targetSha) {
+              throw new Error('The selected target SHA could not be verified.');
+            }
+
+            const releaseTitle = `EUJOR SMS & USSD Gateway ${tagName}`;
+            let release;
+
+            try {
+              const existingRef = await github.rest.git.getRef({ owner, repo, ref: `tags/${tagName}` });
+              let existingCommitSha = existingRef.data.object.sha;
+              if (existingRef.data.object.type === 'tag') {
+                const annotated = await github.rest.git.getTag({ owner, repo, tag_sha: existingCommitSha });
+                existingCommitSha = annotated.data.object.sha;
+              }
+              if (existingCommitSha !== targetSha) {
+                throw new Error(`Tag ${tagName} already points to a different commit; refusing to move it.`);
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              const annotatedTag = await github.rest.git.createTag({
+                owner,
+                repo,
+                tag: tagName,
+                message: `EUJOR SMS & USSD Gateway ${tagName}`,
+                object: targetSha,
+                type: 'commit',
+                tagger: {
+                  name: 'EUJOR Release Automation',
+                  email: 'release-bot@users.noreply.github.com',
+                  date: new Date().toISOString()
+                }
+              });
+              await github.rest.git.createRef({
+                owner,
+                repo,
+                ref: `refs/tags/${tagName}`,
+                sha: annotatedTag.data.sha
+              });
+            }
+
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag: tagName });
+              release = existing.data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              const created = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tagName,
+                target_commitish: targetSha,
+                name: releaseTitle,
+                draft: false,
+                prerelease: false,
+                generate_release_notes: false,
+                body: [
+                  `# ${releaseTitle}`,
+                  '',
+                  'First versioned release of the EUJOR Android SMS & USSD Gateway.',
+                  '',
+                  '## Included',
+                  '- SIM-based SMS sending and incoming SMS forwarding.',
+                  '- Direct and interactive/chained USSD with live prompt reporting.',
+                  '- HTTPS receiver integration, device registration and heartbeat.',
+                  '- Encrypted local job queue and sequential telephony execution.',
+                  '- Encrypted callback outbox with HTTP 200 acknowledgement, event-ID deduplication support, retry and 12-hour retention.',
+                  '- Manual JSON tools, setup/permission screens, device key management and diagnostics.',
+                  '',
+                  '## APK',
+                  'The attached APK is the debug build produced by the successful GitHub Actions run for the application source. It is intended for testing and is not a Play Store-signed production release.',
+                  '',
+                  '## Documentation',
+                  'See [README](https://github.com/' + owner + '/' + repo + '/blob/' + targetSha + '/README.md) and [API protocol](https://github.com/' + owner + '/' + repo + '/blob/' + targetSha + '/docs/API_PROTOCOL.md).',
+                  '',
+                  'Physical-device validation remains necessary for SMS, SIM selection and carrier/OEM-specific interactive USSD behaviour.'
+                ].join('\\n')
+              });
+              release = created.data;
+            }
+
+            const assetName = `EUJOR-SMS-USSD-Gateway-${tagName}.apk`;
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+              owner, repo, release_id: release.id
+            });
+            if (assets.some(asset => asset.name === assetName)) {
+              core.info(`Release asset ${assetName} already exists; leaving it unchanged.`);
+            } else {
+              const data = fs.readFileSync(`release-assets/${assetName}`);
+              await github.rest.repos.uploadReleaseAsset({
+                owner,
+                repo,
+                release_id: release.id,
+                name: assetName,
+                data,
+                headers: {
+                  'content-type': 'application/vnd.android.package-archive',
+                  'content-length': data.length
+                }
+              });
+            }
+
+            core.info(`Published ${releaseTitle} at ${targetSha}`);
