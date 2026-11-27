@@ -176,7 +176,7 @@ The `/api/v1/` prefix identifies the receiver-agent API protocol version. It is 
 
 There is **no fixed heartbeat route** in this protocol. The receiver developer chooses and implements the endpoint URL, which may be a PHP file or any HTTPS path, for example `https://example.com/gateway-heartbeat.php`.
 
-The user enters that complete URL in the app's **Heartbeat URL** setting. When heartbeat is enabled, the Android app sends a POST approximately every 60 seconds to that exact URL. It does not append `/api/v1/agent/devices/heartbeat`, derive the URL from the receiver URL, or send heartbeat requests to the SMS/result receiver URL unless the user explicitly enters the same URL.
+The user enters that complete URL in the app's **Heartbeat URL** setting. When heartbeat is enabled, the Android app sends a POST approximately every 60 seconds to that exact URL. No fixed heartbeat route is imposed by this protocol. The app does not derive the URL from the receiver URL or send heartbeat requests to the SMS/result receiver URL unless the user explicitly enters the same URL.
 
 The POST JSON body contains `device_id`, `device_name`, `app_version`, `android_sdk` and `timestamp`. The receiver endpoint should authenticate the device key, validate the device ID, update its last-seen/online record, and return HTTP 200 with a JSON acknowledgement. Heartbeat is optional, can be switched off in Settings, and is not an SMS or USSD result event.
 
