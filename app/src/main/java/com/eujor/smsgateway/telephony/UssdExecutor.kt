@@ -29,10 +29,12 @@ object UssdExecutor {
                         JSONObject().put("code", code).put("response", text).put("sim_slot", simSlot))
                 }.onFailure { LogStore.append(context, "USSD result could not be sent to receiver server.") }
                 UssdResultStore.finish(text)
+                UssdChainState.finish("completed")
             }
 
             override fun onReceiveUssdResponseFailed(telephonyManager: TelephonyManager, request: String, failureCode: Int) {
                 UssdResultStore.finish("USSD request failed. Android failure code: " + failureCode)
+                UssdChainState.finish("failed")
                 LogStore.append(context, "USSD request failed (Android code " + failureCode + ").")
                 runCatching {
                     GatewayApi.postResult(config, jobId, requestId, "ussd", "failed",

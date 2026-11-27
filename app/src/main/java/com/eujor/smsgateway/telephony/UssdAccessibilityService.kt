@@ -19,6 +19,9 @@ import org.json.JSONObject
 class UssdAccessibilityService : AccessibilityService() {
     private var lastScreenFingerprint = ""
     private var lastInputFingerprint = ""
+    private var sawUssdWindow = false
+    private val closeHandler = Handler(Looper.getMainLooper())
+    private var closeCheck: Runnable? = null
 
     override fun onServiceConnected() {
         activeService = this
@@ -32,14 +35,61 @@ class UssdAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (UssdChainState.isActive()) processActiveWindow()
+        if (!UssdChainState.isActive()) {
+            sawUssdWindow = false
+            closeCheck?.let(closeHandler::removeCallbacks)
+            closeCheck = null
+            return
+        }
+
+        val root = rootInActiveWindow
+        val sourcePackage = root?.packageName?.toString().orEmpty().lowercase()
+        if (isUssdPackage(sourcePackage)) {
+            sawUssdWindow = true
+            closeCheck?.let(closeHandler::removeCallbacks)
+            closeCheck = null
+            if (root != null) processActiveWindow(root)
+        } else if (sawUssdWindow && event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            scheduleCloseCheck()
+        }
     }
 
-    private fun processActiveWindow() {
+    private fun scheduleCloseCheck() {
+        closeCheck?.let(closeHandler::removeCallbacks)
+        val currentSession = UssdChainState.sessionId
+        closeCheck = Runnable {
+            if (!UssdChainState.matches(currentSession)) return@Runnable
+            val root = rootInActiveWindow
+            val packageName = root?.packageName?.toString().orEmpty().lowercase()
+            if (!isUssdPackage(packageName)) {
+                val sessionId = UssdChainState.sessionId
+                val jobId = UssdChainState.jobId
+                val response = UssdResultStore.latest
+                UssdChainState.finish("completed")
+                UssdResultStore.finish()
+                runCatching {
+                    GatewayApi.postResult(
+                        SecureConfigStore.load(this), jobId, sessionId, "ussd", "completed",
+                        JSONObject().put("session_id", sessionId).put("response", response)
+                    )
+                }
+                LogStore.append(this, "USSD dialog closed; session marked completed.")
+                sawUssdWindow = false
+                lastScreenFingerprint = ""
+                lastInputFingerprint = ""
+            } else if (root != null) {
+                processActiveWindow(root)
+            }
+        }.also { closeHandler.postDelayed(it, 1_500) }
+    }
+
+    private fun isUssdPackage(packageName: String): Boolean =
+        listOf("phone", "telecom", "dialer", "telephony").any { packageName.contains(it) }
+
+    private fun processActiveWindow(root: AccessibilityNodeInfo) {
         if (!UssdChainState.isActive()) return
-        val root = rootInActiveWindow ?: return
         val sourcePackage = root.packageName?.toString().orEmpty().lowercase()
-        if (!listOf("phone", "telecom", "dialer", "telephony").any { sourcePackage.contains(it) }) return
+        if (!isUssdPackage(sourcePackage)) return
 
         val screenText = collectText(root).trim()
         if (screenText.isBlank()) return
@@ -90,6 +140,8 @@ class UssdAccessibilityService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         if (activeService === this) activeService = null
+        closeCheck?.let(closeHandler::removeCallbacks)
+        closeCheck = null
         return super.onUnbind(intent)
     }
 
@@ -134,7 +186,7 @@ class UssdAccessibilityService : AccessibilityService() {
             activeService?.let { service ->
                 Handler(Looper.getMainLooper()).post {
                     service.lastInputFingerprint = ""
-                    service.processActiveWindow()
+                    service.rootInActiveWindow?.let(service::processActiveWindow)
                 }
             }
         }

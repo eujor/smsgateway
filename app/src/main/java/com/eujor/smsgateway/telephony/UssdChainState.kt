@@ -13,6 +13,8 @@ object UssdChainState {
         private set
     @Volatile var simSlot: Int = 1
         private set
+    @Volatile var endReason: String = ""
+        private set
     private val pendingInputs = ArrayDeque<String>()
 
     @Synchronized
@@ -23,6 +25,7 @@ object UssdChainState {
         simSlot = slot
         pendingInputs.addAll(inputs)
         startedAt = System.currentTimeMillis()
+        endReason = ""
         active = true
     }
 
@@ -34,32 +37,47 @@ object UssdChainState {
         pendingInputs.addLast(input)
     }
 
-    @Synchronized fun takeNext(): String? {
+    @Synchronized
+    fun takeNext(): String? {
         expireIfNeeded()
         return if (!active || pendingInputs.isEmpty()) null else pendingInputs.removeFirst()
     }
 
-    @Synchronized fun isActive(): Boolean {
+    @Synchronized
+    fun isActive(): Boolean {
         expireIfNeeded()
         return active
     }
 
-    @Synchronized fun matches(session: String): Boolean {
+    @Synchronized
+    fun matches(session: String): Boolean {
         expireIfNeeded()
         return active && sessionId == session
     }
 
     @Synchronized
-    fun clear() {
+    fun finish(reason: String) {
+        if (!active) return
         pendingInputs.clear()
         active = false
         startedAt = 0L
-        sessionId = ""
-        jobId = ""
-        simSlot = 1
+        endReason = reason
+        UssdResultStore.finish(
+            when (reason) {
+                "timeout" -> "USSD session timed out."
+                "failed" -> "USSD session failed."
+                "cancelled" -> "USSD session cancelled."
+                else -> ""
+            }
+        )
     }
 
+    @Synchronized
+    fun clear() = finish("cancelled")
+
     private fun expireIfNeeded() {
-        if (active && System.currentTimeMillis() - startedAt > SESSION_TIMEOUT_MS) clear()
+        if (active && System.currentTimeMillis() - startedAt > SESSION_TIMEOUT_MS) {
+            finish("timeout")
+        }
     }
 }
