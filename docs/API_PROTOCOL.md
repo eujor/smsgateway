@@ -15,7 +15,7 @@ Never reuse or expose the Android device key to a requesting application. Never 
 
 - HTTPS only, with normal TLS certificate and hostname validation.
 - UTF-8 JSON using `application/json`.
-- Every device has a server-issued per-device bearer API key and an app-generated UUID.
+- Every device has a unique per-device bearer API key and an app-generated UUID. The Android app can generate a cryptographically random 256-bit key locally; register that exact key for the device in the receiver server before connecting. A server may alternatively issue a key for the user to paste into the app.
 - Do not use IMEI or IMSI as device identity.
 - Authenticated device requests include:
   - `Authorization: Bearer <DEVICE_API_KEY>`
@@ -41,7 +41,7 @@ Idempotency-Key: order-9001-payment-receipt
 Body:
 ```json
 {
-  "request_id": "phpnuxbill-9001",
+  "request_id": "example-request-9001",
   "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
   "type": "sms",
   "action": "send",
@@ -96,7 +96,7 @@ Return HTTP 202 when accepted into the queue:
 ```json
 {
   "success": true,
-  "request_id": "phpnuxbill-9001",
+  "request_id": "example-request-9001",
   "job_id": "job-9001",
   "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
   "status": "queued"
@@ -113,7 +113,7 @@ Example callback:
 ```json
 {
   "event_id": "evt-10001-2",
-  "request_id": "phpnuxbill-9001",
+  "request_id": "example-request-9001",
   "job_id": "job-9001",
   "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
   "type": "sms",
@@ -183,7 +183,7 @@ Return HTTP 200 with a JSON acknowledgement. Android sends a heartbeat approxima
 
 ## 7. Device job polling
 
-`GET /api/v1/agent/jobs/next?device_id=<UUID>&wait_seconds=20`
+`GET /api/v1/agent/jobs/next?device_id=<UUID>&wait_seconds=20&limit=20`
 
 This is short HTTPS long-polling. Return HTTP 204 if there is no job, or HTTP 200:
 ```json
@@ -201,7 +201,7 @@ This is short HTTPS long-polling. Return HTTP 204 if there is no job, or HTTP 20
 }
 ```
 
-Return jobs only for the authenticated device. Jobs need unique IDs, expiry, idempotency keys and a lease/acknowledgement strategy. Do not blindly redeliver chargeable operations. The Android client keeps a bounded local deduplication history as an additional safeguard.
+Return jobs only for the authenticated device. Return either one legacy `job` object or a `jobs` array containing up to 20 jobs so Android can buffer request bursts locally. Jobs need unique IDs, expiry, idempotency keys and a lease/acknowledgement strategy. Do not blindly redeliver chargeable operations. The Android client persists requests in an encrypted SQLite queue, deduplicates by both `job_id` and `request_id`, and executes one telephony operation at a time.
 
 ## 8. SMS job
 
@@ -306,3 +306,14 @@ Do not include secrets or sensitive request values in error bodies.
 10. Use pre-registered HTTPS callback destinations to prevent SSRF and callback abuse.
 11. Require explicit authorisation for operations that can spend money or change accounts.
 12. Never allow unauthenticated clients to trigger arbitrary SMS or USSD requests.
+
+
+## 15. Android local queue, concurrency and retention
+
+- The poll response may be either a single `job` or a `jobs` array (maximum 20). The agent stores incoming requests in an encrypted SQLite database and supports up to 500 pending jobs.
+- Queue states are `queued`, `processing`, `completed`, `failed`, `timed_out`, `cancelled` and `expired`.
+- Only one telephony operation is dispatched at a time. An active interactive USSD session holds the execution slot until its dialog closes, the user cancels, or its 120-second session timeout expires. Only `continue` and `cancel` jobs for that same session can run while the session is active.
+- The queue enforces uniqueness for both `job_id` and `request_id`. Completed records remain available for duplicate protection for 30 days.
+- If Android or the app restarts while a telephony operation is marked `processing`, the row is marked `failed` and is not replayed automatically. Automatically resending a possibly submitted SMS or repeating a chargeable USSD operation could create duplicate effects. A new request must be submitted after checking the outcome.
+- Daily maintenance runs after 02:00 local device time. It deletes terminal queue records older than 30 days and diagnostic log entries older than 7 days. If the phone was off at 02:00, maintenance runs on the next app or gateway-service start. SQLite primary identifiers are not reset or reused.
+- Incoming SMS forwarding includes message content in the HTTPS result because forwarding is the feature's purpose. Do not configure an untrusted receiver. General local diagnostics do not log SMS bodies, API keys or USSD input values.

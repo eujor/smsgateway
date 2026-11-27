@@ -37,7 +37,7 @@ object LogStore {
             val parsed = try { formatter.parse(timestamp)?.time } catch (_: ParseException) { null }
             parsed == null || parsed >= cutoffMillis
         }.takeLast(MAX_LINES)
-        prefs.edit().putString(KEY, retained.joinToString("\\n")).apply()
+        prefs.edit().putString(KEY, retained.joinToString("\n")).apply()
     }
 
     fun clear(context: Context) {
