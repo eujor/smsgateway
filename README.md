@@ -4,19 +4,22 @@ EUJOR SMS & USSD Gateway is an Android SIM-agent application that connects a pho
 
 The app is backend-agnostic. A receiver can be written in PHP, Go, Python, Node.js, Java, or any language capable of implementing the documented HTTP/JSON API.
 
-## Server-to-device USSD input and device callback
+## USSD server input, device result and acknowledgement
 
-The receiver server polls for jobs using the device's registered credentials. The API key is **not placed in the job JSON**: Android sends it as an HTTP bearer token, together with the device UUID.
+This section is the quick integration guide for third-party receiver developers. The complete endpoint and protocol contract is in [docs/API_PROTOCOL.md](docs/API_PROTOCOL.md).
 
-**Authenticated device request headers:**
+### 1. How the server sends a USSD job to the phone
+
+The device API key is **not a JSON field**. Authenticate the HTTP request with these headers:
 
 ```http
 Authorization: Bearer <DEVICE_API_KEY>
 X-Device-ID: <DEVICE_UUID>
+Content-Type: application/json
 Accept: application/json
 ```
 
-Example interactive USSD job returned by the server:
+The server returns a job from the device polling endpoint. Example direct USSD job:
 
 ```json
 {
@@ -27,26 +30,46 @@ Example interactive USSD job returned by the server:
     "type": "ussd",
     "action": "execute",
     "sim_slot": 1,
-    "code": "*188#",
-    "inputs": ["1", "2", "254712345678"]
+    "code": "*188#"
   }
 }
 ```
 
-- job_id and request_id: unique identifiers supplied by the server.
-- device_id: UUID of the registered phone; it must match the authenticated device.
-- type/action: ussd/execute.
-- sim_slot: 1-based SIM slot; 1 selects SIM 1, 2 selects SIM 2. It must refer to an active SIM.
-- code: USSD string exactly as dialled, for example *188#.
-- inputs: optional array of strings. Each string is entered separately when the next editable carrier prompt appears. Values can be menu choices, phone numbers or other text expected by that prompt. Do not combine the values into one string. Omit inputs for a direct one-response USSD request.
-
-For an unpredictable menu, the server can send a continuation job after reading a prompt:
+Example with responses for a multi-step USSD menu:
 
 ```json
 {
   "job": {
     "job_id": "job-ussd-1002",
     "request_id": "request-ussd-1002",
+    "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+    "type": "ussd",
+    "action": "execute",
+    "sim_slot": 1,
+    "code": "*188#",
+    "inputs": ["1", "2", "254712345678"]
+  }
+}
+```
+
+Field meanings:
+
+- `job_id`: unique ID for this device job.
+- `request_id`: unique ID for the original request from the third-party application.
+- `device_id`: the registered phone UUID; it must match the authenticated device.
+- `type`: `ussd`.
+- `action`: `execute` to start a USSD request.
+- `sim_slot`: 1-based SIM slot number (`1` = SIM 1, `2` = SIM 2).
+- `code`: USSD dial string, supplied as a JSON string, e.g. `"*188#"`.
+- `inputs`: optional array of **strings**. Each string is entered separately when the next editable carrier prompt appears. Examples include menu choices (`"1"`), phone numbers (`"254712345678"`) or other text. Do not combine the sequence into one string. Omit `inputs` for a direct one-response USSD request.
+
+For an interactive menu where the server must inspect each prompt before deciding what to enter, the device reports the screen text and the server sends a continuation job:
+
+```json
+{
+  "job": {
+    "job_id": "job-ussd-1003",
+    "request_id": "request-ussd-1001",
     "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
     "type": "ussd",
     "action": "continue",
@@ -56,32 +79,20 @@ For an unpredictable menu, the server can send a continuation job after reading 
 }
 ```
 
-Here, input is one string for the current prompt. The server may send further continuation jobs as later prompts arrive. A session can also be cancelled with type=ussd, action=cancel and its session_id.
+Here, `input` is one string for the current prompt. Use `action: "cancel"` with the active `session_id` to request cancellation.
 
-### What the Android device sends back
+### 2. What the phone sends to the receiver after USSD execution
 
-Each result is POSTed to /api/v1/agent/results and includes a unique event_id, device/job/request IDs, operation type, status, result data and timestamp.
+The Android app POSTs each result event to:
 
-Example prompt update from an interactive USSD session:
-
-```json
-{
-  "protocol_version": "1",
-  "event_id": "6d0b2c8e-9e9c-4b80-a35a-21f03c15b65c",
-  "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
-  "job_id": "job-ussd-1001",
-  "request_id": "request-ussd-1001",
-  "type": "ussd",
-  "status": "screen_updated",
-  "result": {
-    "session_id": "active-ussd-session-id",
-    "response": "1. Check balance\n2. Buy bundle\n3. Exit"
-  },
-  "timestamp": "2026-11-27T18:30:00Z"
-}
+```http
+POST /api/v1/agent/results
+Authorization: Bearer <DEVICE_API_KEY>
+X-Device-ID: <DEVICE_UUID>
+Content-Type: application/json
 ```
 
-After a direct USSD request returns, the device sends a final event similar to:
+A direct USSD completion event looks like this:
 
 ```json
 {
@@ -101,20 +112,57 @@ After a direct USSD request returns, the device sends a final event similar to:
 }
 ```
 
-For an interactive session, the device can send multiple screen_updated events, input_submitted progress events, and a final completed or failure event. The response field contains the visible USSD text; sim_slot identifies the selected SIM where included. Android failure events may include a failure_code. The device does not echo submitted input values in progress callbacks.
+For an interactive session, the phone can send several events. For example, a screen/prompt update:
 
-**Important:** input_submitted means Android inserted the string and attempted to submit it; it does not prove the carrier accepted it. completed means the USSD dialog closed or the direct request returned; it does not prove that a purchase, transfer or other carrier-side transaction succeeded. The server must inspect and interpret the returned response text.
+```json
+{
+  "protocol_version": "1",
+  "event_id": "6d0b2c8e-9e9c-4b80-a35a-21f03c15b65c",
+  "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+  "job_id": "job-ussd-1002",
+  "request_id": "request-ussd-1002",
+  "type": "ussd",
+  "status": "screen_updated",
+  "result": {
+    "session_id": "active-ussd-session-id",
+    "response": "1. Check balance\n2. Buy bundle\n3. Exit"
+  },
+  "timestamp": "2026-11-27T18:31:00Z"
+}
+```
 
-The receiver must durably store each event before acknowledging it with **HTTP 200** and JSON:
+Other interactive progress statuses include `input_queued` and `input_submitted`. The final event can be `completed`, `failed`, `cancelled` or `timeout`. The app does not echo submitted input values in its progress callbacks.
+
+**Interpret the returned text, not just the status.** `input_submitted` means Android inserted the input and attempted to submit it; it does not prove the carrier accepted it. `completed` means the USSD dialog closed or the direct request returned; it does not prove that a purchase, transfer or other carrier-side transaction succeeded. The receiver must inspect `result.response` and apply carrier-specific success/failure rules.
+
+### 3. Confirmation the app requires from the receiver
+
+The receiver must validate the event, **durably save it** (including its `event_id`) and only then return:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+```
 
 ```json
 {
   "success": true,
-  "event_id": "the-same-event-id-from-the-request"
+  "event_id": "7a1d3c8e-9e9c-4b80-a35a-21f03c15b65c"
 }
 ```
 
-The acknowledgement must echo the exact event_id. The app retries unacknowledged events, so the server must deduplicate by event_id and safely acknowledge duplicates. See the complete API protocol at docs/API_PROTOCOL.md for registration, polling, job fields, result statuses, retries and all other request types.
+The `event_id` in the acknowledgement must exactly match the event received. This is the app's confirmation that the receiver accepted and recorded that callback. HTTP 200 without the matching JSON body is not sufficient.
+
+The app keeps an unconfirmed event in its separate encrypted callback outbox and retries it:
+
+- Up to **6 attempts per retry batch**, with **10 seconds between attempts**.
+- After six unsuccessful attempts, it pauses for **5 minutes** before another retry batch.
+- It continues retrying while the event remains within its **12-hour retention lifetime**; after that it expires and is dropped.
+- Restored validated network connectivity can trigger an immediate retry.
+
+The same event is resent with the same `event_id`. Delivery is at-least-once, so the receiver must enforce a unique constraint/idempotency check on `event_id`. If an event was already stored, acknowledge the duplicate with the same HTTP 200 JSON response without processing it twice. Keep deduplication records for at least 24 hours.
+
+The acknowledgement confirms **server receipt and durable logging only**. It does not confirm carrier-side USSD success. See [the full API protocol](docs/API_PROTOCOL.md#12-device-result-callback-and-delivery-acknowledgement).
 
 ## Features
 
