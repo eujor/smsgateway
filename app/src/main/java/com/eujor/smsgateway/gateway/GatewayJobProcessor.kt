@@ -12,14 +12,17 @@ import com.eujor.smsgateway.telephony.UssdChainState
 import com.eujor.smsgateway.telephony.UssdExecutor
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.UUID
+
+enum class JobProcessOutcome { FINISHED, WAITING_FOR_USSD, FAILED }
 
 object GatewayJobProcessor {
-    fun process(context: Context, config: AppConfig, job: JSONObject) {
+    fun process(context: Context, config: AppConfig, job: JSONObject): JobProcessOutcome {
         val jobId = job.optString("job_id")
         val requestId = job.optString("request_id")
         val type = job.optString("type").lowercase()
-        val action = job.optString("action").ifBlank { if (type == "sms") "send" else "execute" }.lowercase()
+        val action = job.optString("action")
+            .ifBlank { if (type == "sms") "send" else "execute" }
+            .lowercase()
         val simSlot = job.optInt("sim_slot", 1)
 
         try {
@@ -51,16 +54,19 @@ object GatewayJobProcessor {
                     require(ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
                         "Phone permission is required for USSD."
                     }
+                    require(!UssdChainState.isActive()) { "Another USSD session is already active." }
+
+                    UssdChainState.begin(requestId, jobId, simSlot, inputs)
                     if (inputs.isNotEmpty()) {
                         require(UssdAccessibilityService.isEnabled(context)) {
                             "Enable EUJOR USSD Session Assistant before chained USSD."
                         }
-                        UssdChainState.begin(requestId, jobId, simSlot, inputs)
                         UssdExecutor.startInteractive(context, code, simSlot)
                         LogStore.append(context, "Started chained USSD job " + jobId + " with " + inputs.size + " queued inputs.")
                     } else {
                         UssdExecutor.sendDirect(context, config, jobId, requestId, code, simSlot)
                     }
+                    return JobProcessOutcome.WAITING_FOR_USSD
                 }
                 type == "ussd" && action == "continue" -> {
                     val sessionId = job.optString("session_id")
@@ -69,24 +75,33 @@ object GatewayJobProcessor {
                     }
                     require(UssdChainState.matches(sessionId)) { "No active session matches the supplied session_id." }
                     UssdAccessibilityService.submitInput(sessionId, job.getString("input"))
-                    GatewayApi.postResult(config, jobId, requestId, "ussd", "input_queued", JSONObject().put("session_id", sessionId))
+                    GatewayApi.postResult(
+                        config, jobId, requestId, "ussd", "input_queued",
+                        JSONObject().put("session_id", sessionId)
+                    )
                 }
                 type == "ussd" && action == "cancel" -> {
                     val sessionId = job.optString("session_id")
-                    require(UssdChainState.matches(sessionId)) { "No active USSD session matches the supplied session_id." }
-                    UssdChainState.clear()
+                    require(UssdChainState.matches(sessionId)) { "No active session matches the supplied session_id." }
+                    UssdChainState.finish("cancelled")
                     GatewayApi.postResult(config, jobId, requestId, "ussd", "cancelled", JSONObject())
                 }
                 else -> throw IllegalArgumentException("Unsupported job type/action: " + type + "/" + action)
             }
+            return JobProcessOutcome.FINISHED
         } catch (e: Exception) {
+            if (type == "ussd" && UssdChainState.matches(requestId)) UssdChainState.finish("failed")
             val message = e.message ?: "Could not process the request."
             LogStore.append(context, "Job " + (jobId.ifBlank { "unknown" }) + " failed: " + message)
             if (jobId.isNotBlank() && requestId.isNotBlank()) {
                 runCatching {
-                    GatewayApi.postResult(config, jobId, requestId, type.ifBlank { "unknown" }, "failed", JSONObject().put("error", message))
+                    GatewayApi.postResult(
+                        config, jobId, requestId, type.ifBlank { "unknown" }, "failed",
+                        JSONObject().put("error", message)
+                    )
                 }
             }
+            return JobProcessOutcome.FAILED
         }
     }
 

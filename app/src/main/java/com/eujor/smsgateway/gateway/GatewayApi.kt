@@ -52,13 +52,21 @@ object GatewayApi {
         request(config, "/api/v1/agent/devices/heartbeat", "POST", body, 10_000)
     }
 
-    fun nextJob(config: AppConfig): JSONObject? {
+    fun nextJobs(config: AppConfig): List<JSONObject> {
         val device = URLEncoder.encode(config.deviceId, Charsets.UTF_8.name())
-        val response = request(config, "/api/v1/agent/jobs/next?device_id=" + device + "&wait_seconds=20", "GET", null, 25_000)
-        if (response.first == 204 || response.second.isBlank()) return null
+        val response = request(config, "/api/v1/agent/jobs/next?device_id=" + device + "&wait_seconds=20&limit=20", "GET", null, 25_000)
+        if (response.first == 204 || response.second.isBlank()) return emptyList()
         val json = JSONObject(response.second)
-        return if (json.optJSONObject("job") != null) json.optJSONObject("job") else if (json.isNull("job")) null else json
+        val batch = json.optJSONArray("jobs")
+        if (batch != null) {
+            return (0 until batch.length()).mapNotNull { batch.optJSONObject(it) }.take(20)
+        }
+        val single = json.optJSONObject("job")
+        if (single != null) return listOf(single)
+        return if (json.has("job") && json.isNull("job")) emptyList() else listOf(json)
     }
+
+    fun nextJob(config: AppConfig): JSONObject? = nextJobs(config).firstOrNull()
 
     fun postResult(config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject = JSONObject()) {
         if (!remoteConfigured(config)) return
