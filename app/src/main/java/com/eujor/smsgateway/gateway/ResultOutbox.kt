@@ -122,16 +122,17 @@ class ResultOutbox(context: Context) :
     }
 
     @Synchronized
-    fun pendingFinishedUssd(now: Long = System.currentTimeMillis()): List<PendingCallbackSummary> {
+    fun pendingUssdCallbacks(now: Long = System.currentTimeMillis()): List<PendingCallbackSummary> {
         writableDatabase.delete(TABLE_RESULTS, "expires_at<=?", arrayOf(now.toString()))
         val items = mutableListOf<PendingCallbackSummary>()
         readableDatabase.query(TABLE_RESULTS, arrayOf("event_id","payload_encrypted","created_at","next_attempt_at","attempts"), null,null,null,null,"created_at DESC").use { cursor ->
             while (cursor.moveToNext()) {
                 val payload = runCatching { JSONObject(decrypt(cursor.getString(1))) }.getOrNull() ?: continue
                 val body = payload.optJSONObject("body") ?: continue
+                // Include progress events (screen_updated/input_queued/input_submitted) as well
+                // as final events so every unconfirmed USSD callback can be killed.
                 if (body.optString("type") != "ussd") continue
-                val status = body.optString("status")
-                if (status !in setOf("completed","failed","cancelled","timeout")) continue
+                val status = body.optString("status").ifBlank { "pending" }
                 items += PendingCallbackSummary(cursor.getString(0), body.optString("job_id"), body.optString("request_id"), status, cursor.getLong(2), cursor.getLong(3), cursor.getInt(4))
             }
         }
