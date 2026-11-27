@@ -51,3 +51,10 @@ The agent buffers up to 500 pending remote jobs in an encrypted SQLite queue. It
 ## Play Protect and sensitive permissions
 
 Incoming SMS forwarding requires `RECEIVE_SMS`, and interactive USSD display/input uses an Accessibility Service. Google Play Protect may block an APK installed from an internet-sideloading source when these sensitive capabilities are declared. The app discloses the purpose of these capabilities and does not attempt to hide them or bypass Play Protect. See Google's [Play Protect warning guidance](https://developers.google.com/android/play-protect/warning-dev-guidance). Google Play distribution also requires a separate review of SMS/Call Log permission policy and any required declarations.
+
+
+## Reliable result callback delivery
+
+Every outgoing result is first stored in a separate encrypted SQLite outbox. The app requires an exact HTTP 200 response with JSON `{"success":true,"event_id":"<same event_id>"}` before deleting that event. It retries up to 6 times per batch, 10 seconds apart, then waits 5 minutes before another batch; restored internet connectivity triggers an immediate retry. Events are retained for up to 12 hours from creation. The outbox is independent of the 02:00 log/job maintenance and is never truncated or reset by it.
+
+The receiver must durably store each event before acknowledging it and enforce idempotency on `event_id`. The app's delivery is at-least-once: if an acknowledgement is lost after server storage, the same event can be sent again. See [the callback acknowledgement contract](docs/API_PROTOCOL.md#12-device-result-callback-and-delivery-acknowledgement).

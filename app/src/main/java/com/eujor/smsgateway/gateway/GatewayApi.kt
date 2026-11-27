@@ -12,13 +12,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.time.Instant
-import java.util.concurrent.Executors
 
 object GatewayApi {
-    private val resultQueue = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "EujorGatewayResults").apply { isDaemon = true }
-    }
-
     fun remoteConfigured(config: AppConfig): Boolean =
         config.serverUrl.startsWith("https://", true) && config.apiKey.isNotBlank()
 
@@ -68,17 +63,48 @@ object GatewayApi {
 
     fun nextJob(config: AppConfig): JSONObject? = nextJobs(config).firstOrNull()
 
-    fun postResult(config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject = JSONObject()) {
-        if (!remoteConfigured(config)) return
-        val body = resultEnvelope(config, jobId, requestId, type, status, result)
-        resultQueue.execute {
-            runCatching { request(config, "/api/v1/agent/results", "POST", body, 12_000) }
-        }
+    /**
+     * Results are first persisted in the encrypted local outbox. The sender
+     * deletes them only after an HTTP 200 response with the matching event ID.
+     */
+    fun postResult(context: Context, config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject = JSONObject()) {
+        queueResult(context, config, jobId, requestId, type, status, result)
     }
 
-    fun postResultBlocking(config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject = JSONObject()) {
+    // Kept as a compatibility name for receiver-triggered events; enqueue is durable and non-blocking.
+    fun postResultBlocking(context: Context, config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject = JSONObject()) {
+        queueResult(context, config, jobId, requestId, type, status, result)
+    }
+
+    private fun queueResult(context: Context, config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject) {
         if (!remoteConfigured(config)) return
-        request(config, "/api/v1/agent/results", "POST", resultEnvelope(config, jobId, requestId, type, status, result), 12_000)
+        val body = resultEnvelope(config, jobId, requestId, type, status, result)
+        val outbox = ResultOutbox(context)
+        try {
+            val eventId = outbox.enqueue(config, body)
+            LogStore.append(context, "Callback event queued locally: " + eventId)
+        } finally {
+            outbox.close()
+        }
+        ResultOutboxWorker.kick(context)
+    }
+
+    internal fun deliverQueuedResult(event: PendingResultEvent) {
+        val response = request(event.config, "/api/v1/agent/results", "POST", event.body, 12_000)
+        if (response.first != 200) {
+            throw IOException("Callback acknowledgement must be HTTP 200; received HTTP " + response.first + ".")
+        }
+        val acknowledgement = try {
+            JSONObject(response.second)
+        } catch (_: Exception) {
+            throw IOException("Callback acknowledgement must be a JSON object.")
+        }
+        if (!acknowledgement.optBoolean("success", false)) {
+            throw IOException("Callback acknowledgement did not confirm success=true.")
+        }
+        if (acknowledgement.optString("event_id") != event.eventId) {
+            throw IOException("Callback acknowledgement event_id did not match the submitted event.")
+        }
     }
 
     private fun resultEnvelope(config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject) =

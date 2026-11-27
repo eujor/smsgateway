@@ -25,7 +25,7 @@ object UssdExecutor {
                 UssdResultStore.update(text)
                 LogStore.append(context, "USSD response received for job " + jobId + ".")
                 runCatching {
-                    GatewayApi.postResult(config, jobId, requestId, "ussd", "completed",
+                    GatewayApi.postResult(context, config, jobId, requestId, "ussd", "completed",
                         JSONObject().put("code", code).put("response", text).put("sim_slot", simSlot))
                 }.onFailure { LogStore.append(context, "USSD result could not be sent to receiver server.") }
                 UssdResultStore.finish(text)

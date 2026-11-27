@@ -69,7 +69,7 @@ class UssdAccessibilityService : AccessibilityService() {
                 UssdResultStore.finish()
                 runCatching {
                     GatewayApi.postResult(
-                        SecureConfigStore.load(this), jobId, sessionId, "ussd", "completed",
+                        this, SecureConfigStore.load(this), jobId, sessionId, "ussd", "completed",
                         JSONObject().put("session_id", sessionId).put("response", response)
                     )
                 }
@@ -103,7 +103,7 @@ class UssdAccessibilityService : AccessibilityService() {
             UssdResultStore.update(screenText)
             runCatching {
                 GatewayApi.postResult(
-                    SecureConfigStore.load(this), UssdChainState.jobId, UssdChainState.sessionId,
+                    this, SecureConfigStore.load(this), UssdChainState.jobId, UssdChainState.sessionId,
                     "ussd", "screen_updated",
                     JSONObject().put("session_id", UssdChainState.sessionId).put("response", screenText)
                 )
@@ -125,7 +125,7 @@ class UssdAccessibilityService : AccessibilityService() {
                     LogStore.append(this, "Submitted next USSD chain item; input value redacted.")
                     runCatching {
                         GatewayApi.postResult(
-                            SecureConfigStore.load(this), UssdChainState.jobId, UssdChainState.sessionId,
+                            this, SecureConfigStore.load(this), UssdChainState.jobId, UssdChainState.sessionId,
                             "ussd", "input_submitted", JSONObject().put("session_id", UssdChainState.sessionId)
                         )
                     }

@@ -12,6 +12,7 @@ import com.eujor.smsgateway.data.DailyMaintenance
 import com.eujor.smsgateway.data.LogStore
 import com.eujor.smsgateway.data.SecureConfigStore
 import com.eujor.smsgateway.gateway.GatewayApi
+import com.eujor.smsgateway.gateway.ResultOutboxWorker
 import com.eujor.smsgateway.gateway.GatewayJobProcessor
 import com.eujor.smsgateway.gateway.JobProcessOutcome
 import com.eujor.smsgateway.gateway.LocalJobQueue
@@ -35,6 +36,7 @@ class GatewayAgentService : Service() {
             return START_NOT_STICKY
         }
         createNotificationChannel()
+        ResultOutboxWorker.kick(this)
         startForeground(NOTIFICATION_ID, notification())
         if (!running) {
             running = true
@@ -95,7 +97,7 @@ class GatewayAgentService : Service() {
                             if (reason == "timeout") "USSD session timed out." else ""
                         )
                         if (reason == "timeout") {
-                            GatewayApi.postResult(config, activeJob.jobId, activeJob.requestId, "ussd", "timeout")
+                            GatewayApi.postResult(this, config, activeJob.jobId, activeJob.requestId, "ussd", "timeout")
                             LogStore.append(this, "USSD session timed out; next queued request may proceed.")
                         }
                         activeJob = null
@@ -196,7 +198,7 @@ class GatewayAgentService : Service() {
                     val requestId = job.optString("request_id")
                     if (jobId.isNotBlank() && requestId.isNotBlank()) {
                         GatewayApi.postResult(
-                            config, jobId, requestId, job.optString("type", "unknown"), "failed",
+                            this, config, jobId, requestId, job.optString("type", "unknown"), "failed",
                             org.json.JSONObject().put("error", "The phone's local request queue is full.")
                         )
                     }

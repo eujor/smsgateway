@@ -34,7 +34,7 @@ object SmsExecutor {
         manager.sendTextMessage(recipient, null, message, sentIntent, deliveryIntent)
         LogStore.append(context, "SMS submitted to Android for " + mask(recipient) + " (job " + jobId + ").")
         runCatching {
-            GatewayApi.postResult(config, jobId, requestId, "sms", "accepted",
+            GatewayApi.postResult(context, config, jobId, requestId, "sms", "accepted",
                 JSONObject().put("recipient", recipient).put("sim_slot", simSlot))
         }.onFailure { LogStore.append(context, "SMS acceptance report could not be queued.") }
         } catch (e: Exception) {

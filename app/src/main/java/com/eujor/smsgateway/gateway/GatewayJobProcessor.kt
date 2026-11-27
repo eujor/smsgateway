@@ -77,7 +77,7 @@ object GatewayJobProcessor {
                     require(UssdChainState.matches(sessionId)) { "No active session matches the supplied session_id." }
                     UssdAccessibilityService.submitInput(sessionId, job.getString("input"))
                     GatewayApi.postResult(
-                        config, jobId, requestId, "ussd", "input_queued",
+                        context, config, jobId, requestId, "ussd", "input_queued",
                         JSONObject().put("session_id", sessionId)
                     )
                 }
@@ -85,7 +85,7 @@ object GatewayJobProcessor {
                     val sessionId = job.optString("session_id")
                     require(UssdChainState.matches(sessionId)) { "No active session matches the supplied session_id." }
                     UssdChainState.finish("cancelled")
-                    GatewayApi.postResult(config, jobId, requestId, "ussd", "cancelled", JSONObject())
+                    GatewayApi.postResult(context, config, jobId, requestId, "ussd", "cancelled", JSONObject())
                 }
                 else -> throw IllegalArgumentException("Unsupported job type/action: " + type + "/" + action)
             }
@@ -97,7 +97,7 @@ object GatewayJobProcessor {
             if (jobId.isNotBlank() && requestId.isNotBlank()) {
                 runCatching {
                     GatewayApi.postResult(
-                        config, jobId, requestId, type.ifBlank { "unknown" }, "failed",
+                        context, config, jobId, requestId, type.ifBlank { "unknown" }, "failed",
                         JSONObject().put("error", message)
                     )
                 }

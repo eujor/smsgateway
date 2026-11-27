@@ -35,6 +35,7 @@ import com.eujor.smsgateway.data.LogStore
 import com.eujor.smsgateway.data.DailyMaintenance
 import com.eujor.smsgateway.data.SecureConfigStore
 import com.eujor.smsgateway.gateway.GatewayApi
+import com.eujor.smsgateway.gateway.ResultOutboxWorker
 import com.eujor.smsgateway.gateway.GatewayRequest
 import com.eujor.smsgateway.gateway.ManualRequestParser
 import com.eujor.smsgateway.gateway.RequestParseResult
@@ -127,7 +128,7 @@ fun GatewayApp() {
                     request.type == "ussd" && request.action == "continue" -> {
                         check(UssdChainState.matches(request.sessionId)) { "No active USSD session matches this session_id." }
                         UssdAccessibilityService.submitInput(request.sessionId, request.inputs.first())
-                        GatewayApi.postResult(config, request.jobId, request.requestId, "ussd", "input_queued",
+                        GatewayApi.postResult(context, config, request.jobId, request.requestId, "ussd", "input_queued",
                             JSONObject().put("session_id", request.sessionId))
                     }
                     request.type == "ussd" && request.action == "cancel" -> {
@@ -180,6 +181,7 @@ fun GatewayApp() {
 
     LaunchedEffect(Unit) {
         DailyMaintenance.runIfDue(context)
+        ResultOutboxWorker.kick(context)
         while (true) {
             ussdResponse = UssdResultStore.latest
             delay(700)
@@ -574,7 +576,7 @@ private fun RequirementsScreen() {
         RequirementCard("Application", "Version ${BuildConfig.VERSION_NAME} (version code ${BuildConfig.VERSION_CODE})\nMinimum Android: Android 8.0 Oreo (API 26)\nCompile SDK: 36\nTarget SDK: 36\nDevice identity: app-generated UUID; IMEI/IMSI not required.")
         RequirementCard("Permissions", "SMS send: SEND_SMS\nIncoming SMS: RECEIVE_SMS\nUSSD / call chain: CALL_PHONE\nSIM selection: READ_PHONE_STATE\nBackground agent: foreground service and notifications\nMulti-step USSD: enable EUJOR USSD Session Assistant in Android Accessibility settings.")
         RequirementCard("Server → app input", "SMS: type=sms, action=send, to and message. USSD: type=ussd, action=execute and code. Optional sim_slot is 1-based. Optional inputs is an array of strings entered as prompts appear. Server-driven continuation uses action=continue with session_id and input.")
-        RequirementCard("App → server output", "Result fields: protocol_version, device_id, job_id, request_id, type, status, result and timestamp. SMS distinguishes accepted, sent, delivered and failure statuses. USSD reports completed, failed, screen_updated, input_submitted or input_queued.")
+        RequirementCard("App → server output", "Every callback has a unique event_id. The receiver MUST return HTTP 200 with JSON {success:true,event_id:<same event_id>} to confirm receipt. HTTP 202, other status codes, missing JSON or mismatched event_id are not accepted. The encrypted outbox retries up to 6 times, 10 seconds apart, then waits 5 minutes before another batch; restored connectivity triggers an immediate retry. Events expire after 12 hours. Pending callbacks are separate from 02:00 log/job maintenance and are not truncated by it. Receiver must deduplicate event_id.")
         RequirementCard("USSD modes", "Direct mode uses TelephonyManager.sendUssdRequest() for a single request and response. Chained mode opens the visible carrier USSD dialog and uses accessibility to enter queued responses. The server can also send another input after receiving a menu response. OEM and carrier behaviour varies.")
         RequirementCard("Security", "HTTPS only. Per-device bearer key encrypted with Android Keystore AES-GCM. The app can generate a random 256-bit device key; register the same key with the receiver server. UUID device ID; no IMEI/IMSI. Queue payloads are encrypted at rest. Avoid storing SIM PINs or mobile-money PINs in sample JSON. Inputs are excluded from local logs.")
         RequirementCard("Installation notice", "This app requests SMS and optional Accessibility capabilities for its core gateway functions. Google Play Protect may block installations from internet-sideloading sources when RECEIVE_SMS and Accessibility are declared. Install only builds from the trusted EUJOR repository; keep device protection enabled whenever possible.")

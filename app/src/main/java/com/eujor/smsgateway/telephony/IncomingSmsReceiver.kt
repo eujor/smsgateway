@@ -24,7 +24,7 @@ class IncomingSmsReceiver : BroadcastReceiver() {
                         .put("message", sms.messageBody.orEmpty())
                         .put("received_at", Instant.now().toString())
                     GatewayApi.postResultBlocking(
-                        SecureConfigStore.load(context), id, id, "sms.incoming", "received", result
+                        context, SecureConfigStore.load(context), id, id, "sms.incoming", "received", result
                     )
                     LogStore.append(context, "Incoming SMS received from " + mask(sms.originatingAddress.orEmpty()) + ".")
                 }

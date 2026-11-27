@@ -27,7 +27,7 @@ class SmsStatusReceiver : BroadcastReceiver() {
         Thread {
             try {
                 GatewayApi.postResultBlocking(
-                    SecureConfigStore.load(context), jobId, requestId, "sms", status,
+                    context, SecureConfigStore.load(context), jobId, requestId, "sms", status,
                     JSONObject().put("recipient", recipient).put("android_result_code", resultCode)
                 )
             } catch (_: Exception) {

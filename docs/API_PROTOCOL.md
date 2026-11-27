@@ -258,13 +258,17 @@ For unpredictable menus:
 
 Cancel with `type=ussd`, `action=cancel` and the active `session_id`. Limit to one active interactive session per SIM and expire sessions (suggested default 120 seconds). Some OEM/carrier dialogs expose only buttons or proprietary overlays; automation cannot be guaranteed on all phones.
 
-## 12. Device result callback
+## 12. Device result callback and delivery acknowledgement
+
+The Android agent sends each result event to:
 
 `POST /api/v1/agent/results`
 
+Example request:
 ```json
 {
   "protocol_version": "1",
+  "event_id": "6d0b2c8e-9e9c-4b80-a35a-21f03c15b65c",
   "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
   "job_id": "job-10001",
   "request_id": "request-10001",
@@ -275,7 +279,23 @@ Cancel with `type=ussd`, `action=cancel` and the active `session_id`. Limit to o
 }
 ```
 
-Respond HTTP 200/202 with `{"success":true}`. Known statuses: `accepted`, `sent`, `delivered`, `send_failed`, `delivery_report_failed`, `completed`, `failed`, `screen_updated`, `input_submitted`, `input_queued`, `cancelled`, `received`.
+**The receiver MUST return HTTP 200 and this JSON acknowledgement:**
+```json
+{
+  "success": true,
+  "event_id": "6d0b2c8e-9e9c-4b80-a35a-21f03c15b65c"
+}
+```
+
+- HTTP 202, other 2xx codes, missing/invalid JSON, `success:false`, or a different `event_id` are NOT delivery confirmation. The app keeps the event pending.
+- The receiver must durably store/process the event before returning the acknowledgement.
+- Treat `event_id` as an idempotency key. If the same event is received again, do not process it twice; return HTTP 200 with `success:true` and the same `event_id` after confirming the original event was stored.
+- The app persists outgoing events in a separate encrypted SQLite outbox before attempting transmission. It retries failed/unconfirmed delivery up to 6 attempts per retry batch, spaced 10 seconds apart. After a batch it waits 5 minutes before another batch; validated network restoration triggers an immediate retry. It retains pending events for up to 12 hours from creation, then expires them.
+- Pending callback records are separate from diagnostic logs and incoming-job records. The 02:00 maintenance task must not truncate, reset, or delete this outbox. Its identifiers are UUIDs and are never reset to 1.
+- Delivery is at-least-once, not exactly-once: if the receiver stores an event but its HTTP 200 response is lost, the app will retry it. Receiver-side idempotency by `event_id` is therefore mandatory.
+- A successful HTTP 200 acknowledgement confirms that the receiver accepted and durably recorded the callback event. It does NOT prove that an SMS reached its recipient or that a USSD transaction succeeded commercially.
+
+Known statuses: `accepted`, `sent`, `delivered`, `send_failed`, `delivery_report_failed`, `completed`, `failed`, `screen_updated`, `input_submitted`, `input_queued`, `cancelled`, `received`, `timeout`.
 
 ## 13. Error response
 
@@ -317,3 +337,8 @@ Do not include secrets or sensitive request values in error bodies.
 - If Android or the app restarts while a telephony operation is marked `processing`, the row is marked `failed` and is not replayed automatically. Automatically resending a possibly submitted SMS or repeating a chargeable USSD operation could create duplicate effects. A new request must be submitted after checking the outcome.
 - Daily maintenance runs after 02:00 local device time. It deletes terminal queue records older than 30 days and diagnostic log entries older than 7 days. If the phone was off at 02:00, maintenance runs on the next app or gateway-service start. SQLite primary identifiers are not reset or reused.
 - Incoming SMS forwarding includes message content in the HTTPS result because forwarding is the feature's purpose. Do not configure an untrusted receiver. General local diagnostics do not log SMS bodies, API keys or USSD input values.
+
+
+## 16. Callback outbox retention and receiver requirements
+
+Receiver implementers must follow section 12 exactly. In particular, returning HTTP 200 alone is insufficient: the JSON body must contain `success:true` and echo the submitted `event_id`. Store event IDs with a uniqueness constraint and make duplicate delivery safe. Keep deduplication records longer than the app's 12-hour retry window (24 hours or longer is recommended). Never acknowledge before the event is durably recorded.
