@@ -136,6 +136,7 @@ fun GatewayApp() {
                         GatewayApi.postResult(config, request.jobId, request.requestId, "ussd", "cancelled", JSONObject())
                     }
                     request.type == "ussd" && request.inputs.isNotEmpty() -> {
+                        check(!UssdChainState.isActive()) { "Another USSD session is already active. Finish it before starting another." }
                         check(UssdAccessibilityService.isEnabled(context)) {
                             "Enable EUJOR USSD Session Assistant from Home before using a chain."
                         }
@@ -151,6 +152,8 @@ fun GatewayApp() {
                         check(ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                             "Grant Phone permission from Home before testing USSD."
                         }
+                        check(!UssdChainState.isActive()) { "Another USSD session is already active. Finish it before starting another." }
+                        UssdChainState.begin(request.requestId, request.jobId, request.simSlot, emptyList())
                         UssdResultStore.update("USSD request sent. Waiting for the network...")
                         UssdExecutor.sendDirect(context, config, request.jobId, request.requestId, request.ussdCode, request.simSlot)
                     }

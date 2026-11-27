@@ -122,6 +122,17 @@ class GatewayAgentService : Service() {
                         continue
                     }
 
+                    // A manually triggered USSD session also holds the telephony slot.
+                    if (UssdChainState.isActive()) {
+                        val controlJob = queue.nextQueued(UssdChainState.sessionId)
+                        if (controlJob != null) {
+                            runQueuedJob(queue, config, controlJob)
+                            continue
+                        }
+                        enqueueRemoteJobs(queue, config)
+                        continue
+                    }
+
                     // A manually triggered SMS also holds the telephony slot while Android resolves its send result.
                     if (SmsOperationState.hasActiveOperation()) {
                         enqueueRemoteJobs(queue, config)
