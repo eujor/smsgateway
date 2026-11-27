@@ -26,7 +26,7 @@ Maintain a universal, self-hosted Android SMS/USSD agent for `eujor/smsgateway`.
 - HTTPS only. Never disable TLS verification or allow cleartext traffic.
 - Language-neutral JSON protocol. No PHP/Go-specific assumptions in the Android parser.
 - Validate types, lengths, phone number, USSD code and SIM slot before telephony actions.
-- Require device registration/authentication and server-side capability authorisation before remote jobs.
+- Require per-device API-key authentication, device-ID binding and server-side capability authorisation before remote jobs.
 - Persist remote requests in encrypted SQLite, cap pending rows, deduplicate both job_id and request_id, process serially, hold the queue for active USSD sessions, and do not automatically replay interrupted telephony operations.
 - Treat USSD as potentially financial/destructive. Require explicit consent for manual triggering and a secure server-side allowlist/approval model for remote jobs.
 - Accessibility interaction must be limited to an active, user-authorised USSD session. Do not inspect unrelated screen content.
