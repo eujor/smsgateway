@@ -26,21 +26,6 @@ object GatewayApi {
         return "Receiver server responded (HTTP " + response.first + ")."
     }
 
-    fun registerDevice(config: AppConfig, context: Context) {
-        val body = JSONObject()
-            .put("protocol_version", "1")
-            .put("device_id", config.deviceId)
-            .put("device_name", config.deviceName)
-            .put("app_version", BuildConfig.VERSION_NAME)
-            .put("android_version", Build.VERSION.RELEASE)
-            .put("android_sdk", Build.VERSION.SDK_INT)
-            .put("capabilities", JSONArray(listOf("sms.send", "sms.sent_report", "sms.delivery_report", "ussd.execute", "ussd.chain", "ussd.continue")))
-        val response = request(config, "/api/v1/agent/devices/register", "POST", body, 12_000)
-        val status = runCatching { JSONObject(response.second).optString("device_status") }.getOrDefault("")
-        if (status != "approved") throw IOException("Device registration is not approved by the receiver server.")
-        LogStore.append(context, "Device registration approved by receiver server.")
-    }
-
     fun heartbeat(config: AppConfig) {
         if (!config.heartbeatEnabled) return
         val endpoint = config.heartbeatUrl.trim()
