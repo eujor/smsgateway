@@ -68,7 +68,7 @@ fun GatewayApp() {
     var agentConnected by remember { mutableStateOf(GatewayAgentService.isRunning()) }
     var ussdResponse by remember { mutableStateOf(UssdResultStore.latest) }
     var pendingUssdCallbacks by remember { mutableStateOf(emptyList<PendingCallbackSummary>()) }
-    fun refreshPendingUssd() { ResultOutbox(context).use { pendingUssdCallbacks = it.pendingFinishedUssd() } }
+    fun refreshPendingUssd() { ResultOutbox(context).use { pendingUssdCallbacks = it.pendingUssdCallbacks() } }
     fun killPendingUssd(eventId: String) {
         ResultOutboxWorker.cancel(context, eventId)
         LogStore.append(context, "Pending USSD callback retry cancelled by user: " + eventId)
@@ -381,9 +381,9 @@ private fun HomeScreen(
         }
         Card {
             Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Unconfirmed finished USSD", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("Final USSD callbacks awaiting server acknowledgement. Kill stops future retries.", style = MaterialTheme.typography.bodySmall)
-                if (pendingUssdCallbacks.isEmpty()) Text("No unconfirmed finished USSD callbacks.")
+                Text("Unconfirmed USSD callbacks", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("All USSD callbacks awaiting server acknowledgement, including screen updates. Kill stops future retries for that event.", style = MaterialTheme.typography.bodySmall)
+                if (pendingUssdCallbacks.isEmpty()) Text("No unconfirmed USSD callbacks.")
                 pendingUssdCallbacks.forEach { item ->
                     Divider()
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
