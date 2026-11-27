@@ -24,6 +24,8 @@ import com.eujor.smsgateway.telephony.SmsOperationState
 class GatewayAgentService : Service() {
     @Volatile private var running = false
     private var worker: Thread? = null
+    private var pollFailureCount = 0
+    private var nextPollAllowedAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -201,7 +203,34 @@ class GatewayAgentService : Service() {
     }
 
     private fun enqueueRemoteJobs(queue: LocalJobQueue, config: com.eujor.smsgateway.data.AppConfig) {
-        GatewayApi.nextJobs(config).forEach { job ->
+        val waitMs = nextPollAllowedAt - android.os.SystemClock.elapsedRealtime()
+        if (waitMs > 0) {
+            try {
+                Thread.sleep(waitMs)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            return
+        }
+
+        val jobs = try {
+            GatewayApi.nextJobs(config).also {
+                pollFailureCount = 0
+                nextPollAllowedAt = 0L
+            }
+        } catch (e: Exception) {
+            pollFailureCount = (pollFailureCount + 1).coerceAtMost(5)
+            val retryDelayMs = (5_000L shl (pollFailureCount - 1)).coerceAtMost(60_000L)
+            nextPollAllowedAt = android.os.SystemClock.elapsedRealtime() + retryDelayMs
+            LogStore.append(
+                this,
+                "Job polling failed; retrying in " + (retryDelayMs / 1_000) +
+                    "s: " + (e.message ?: "receiver request failed")
+            )
+            return
+        }
+
+        jobs.forEach { job ->
             when (queue.enqueue(job)) {
                 QueueInsertResult.ADDED -> LogStore.append(this, "Remote job stored in local queue: " + job.optString("job_id"))
                 QueueInsertResult.DUPLICATE -> LogStore.append(this, "Duplicate remote job ignored: " + job.optString("job_id"))
