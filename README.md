@@ -232,7 +232,7 @@ The app does not echo the submitted input values in these progress events. The s
 - Reveal, hide and copy the key; generate a replacement to rotate it.
 - Register the device with the receiver and check that the receiver approves it.
 - Optional heartbeat with its own enable/disable switch and complete HTTPS endpoint URL; POST goes only to that exact URL, independently of the receiver server URL.
-- Test the receiver's health endpoint.
+- Test the receiver server's health endpoint (the app sends a GET request to the receiver; this does not check the Android app's reachability).
 - Long-poll for remote jobs.
 - Receive either one job or a batch of up to 20 jobs.
 - Attempt reconnection when receiver/network requests fail while the gateway service is running.
@@ -330,9 +330,10 @@ Daily maintenance runs after 02:00 local device time:
 
 The result outbox uses a separate database and UUID event identifiers. The daily maintenance task does not truncate it, reset its identifiers or delete pending callbacks. If the phone is off at 02:00, maintenance runs the next time the app or gateway service starts.
 
-## App requirements and permissions
+## App permissions
 
-- Android 8.0 (API 26) or newer.
+The minimum Android version is specified in each version's GitHub release notes and may change between releases.
+
 - Active SIM with SMS/USSD service for the relevant operation.
 - `SEND_SMS` — sending SMS.
 - `CALL_PHONE` — launching interactive USSD.
@@ -375,7 +376,7 @@ Implement the language-neutral contract in [docs/API_PROTOCOL.md](docs/API_PROTO
 The Android app expects the receiver to provide:
 
 - Device registration/approval: `POST /api/v1/agent/devices/register`.
-- Health check: `GET /api/v1/agent/health`.
+- Receiver health check: `GET /api/v1/agent/health` is hosted by your receiver server. The Android app calls it when you use Test Connection; it checks the receiver server, not the phone/app. The app does not expose an inbound HTTP health endpoint.
 - Optional heartbeat: a complete HTTPS URL configured separately in Settings; when enabled, the app POSTs to that exact URL without appending a path or using the receiver URL.
 - Job polling: `GET /api/v1/agent/jobs/next`.
 - Result ingestion: `POST /api/v1/agent/results`.
