@@ -19,8 +19,9 @@ Maintain a universal, self-hosted Android SMS/USSD agent for `eujor/smsgateway`.
 - Server URL and API key must be editable without rebuilding.
 
 ## Engineering and security rules
-- Minimum SDK 26; compile/target SDK 36 unless device compatibility research supports a deliberate change.
-- JDK 17. Use stable dependencies with explicit versions.
+- Minimum SDK 26; compile SDK 37; target SDK 36 unless current Android compatibility requirements justify an update.
+- JDK 17; AGP 9.6.0; Gradle 9.8.2; built-in Kotlin 2.4.20 and Compose compiler plugin 2.4.20.
+- Keep dependency versions explicit.
 - HTTPS only. Never disable TLS verification or allow cleartext traffic.
 - Language-neutral JSON protocol. No PHP/Go-specific assumptions in the Android parser.
 - Validate types, lengths, phone number, USSD code and SIM slot before telephony actions.
@@ -33,5 +34,5 @@ Maintain a universal, self-hosted Android SMS/USSD agent for `eujor/smsgateway`.
 ## Before completing a feature
 1. Update `docs/API_PROTOCOL.md` for wire-contract changes.
 2. Update README and Requirements UI for compatibility/permission changes.
-3. Build `./gradlew assembleDebug`, run tests and resolve errors.
-4. Report exactly what was built/tested. Do not claim physical-SIM validation without testing a real device.
+3. Build `gradle --no-daemon assembleDebug`, run tests and resolve errors.
+4. Report exactly what was built/tested. Do not claim physical-SIM validation without doing it.

@@ -5,7 +5,7 @@ A self-hostable Android SIM agent for SMS and USSD. The Android app is designed 
 ## Project status
 This repository contains the first Android application foundation: Kotlin, Jetpack Compose Material 3 UI, encrypted configuration, a manual JSON request tester, local SMS and USSD execution, queued USSD input chains, accessibility-assisted USSD interaction, local clearable diagnostics, permission/setup helpers, a requirements screen, and the v1 server protocol.
 
-It still needs a successful CI build and physical-device validation across Android vendors, SIM configurations and mobile networks before being considered production-ready. USSD accessibility behaviour varies by device and carrier.
+It still needs successful CI compilation and physical-device validation across Android vendors, SIM configurations and mobile networks before it is production-ready. USSD accessibility behaviour varies by device and carrier.
 
 ## App areas
 - **Home:** receiver connection controls, device identity, permission and battery setup.
@@ -17,9 +17,13 @@ It still needs a successful CI build and physical-device validation across Andro
 A blank receiver URL does not block a manual local test. The app warns that the operation will run on the phone and its result will remain local rather than being sent to a receiver server.
 
 ## Build
-Requirements: JDK 17, Android SDK Platform 36, Build Tools 36.0.0 and Gradle 8.13.
+Requirements: JDK 17, Android SDK Platform 37, Build Tools 37.0.0 and Gradle 9.8.2.
 
-Open the repository root in Android Studio and sync Gradle. To generate the standard wrapper locally, run `gradle wrapper --gradle-version 8.13 --distribution-type bin`, then build with `./gradlew assembleDebug`.
+Open the repository root in a compatible Android Studio release and sync Gradle. To build from a shell with Gradle 9.8.2 installed, run:
+
+```bash
+gradle --no-daemon assembleDebug
+```
 
 GitHub Actions builds a debug APK and uploads it as a workflow artifact. Published builds will appear under [GitHub Releases](https://github.com/eujor/smsgateway/releases).
 
@@ -37,4 +41,4 @@ Implement [docs/API_PROTOCOL.md](docs/API_PROTOCOL.md). The app uses HTTPS, a pe
 ## Security
 Config (including the API key) is encrypted using Android Keystore AES-GCM. Remote connections require HTTPS with normal certificate validation. The app uses a random UUID, not IMEI/IMSI. Logs omit API keys, full message bodies and USSD input values.
 
-See [AGENTS.md](AGENTS.md) for Codex instructions.
+See [AGENTS.md](AGENTS.md) for Codex development rules.

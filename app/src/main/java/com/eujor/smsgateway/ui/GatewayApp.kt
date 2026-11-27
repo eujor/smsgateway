@@ -486,7 +486,7 @@ private fun RequirementsScreen() {
     val context = androidx.compose.ui.platform.LocalContext.current
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Requirements & protocol", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        RequirementCard("Application", "Version ${BuildConfig.VERSION_NAME}\nMinimum Android: Android 8.0 Oreo (API 26)\nCompile / target SDK: 36\nDevice identity: app-generated UUID; IMEI/IMSI not required.")
+        RequirementCard("Application", "Version ${BuildConfig.VERSION_NAME}\nMinimum Android: Android 8.0 Oreo (API 26)\nCompile SDK: 37\nTarget SDK: 36\nDevice identity: app-generated UUID; IMEI/IMSI not required.")
         RequirementCard("Permissions", "SMS send: SEND_SMS\nIncoming SMS: RECEIVE_SMS\nUSSD / call chain: CALL_PHONE\nSIM selection: READ_PHONE_STATE\nBackground agent: foreground service and notifications\nMulti-step USSD: enable EUJOR USSD Session Assistant in Android Accessibility settings.")
         RequirementCard("Server → app input", "SMS: type=sms, action=send, to and message. USSD: type=ussd, action=execute and code. Optional sim_slot is 1-based. Optional inputs is an array of strings entered as prompts appear. Server-driven continuation uses action=continue with session_id and input.")
         RequirementCard("App → server output", "Result fields: protocol_version, device_id, job_id, request_id, type, status, result and timestamp. SMS distinguishes accepted, sent, delivered and failure statuses. USSD reports completed, failed, screen_updated, input_submitted or input_queued.")
