@@ -43,16 +43,48 @@ object GatewayApi {
 
     fun nextJobs(config: AppConfig): List<JSONObject> {
         val device = URLEncoder.encode(config.deviceId, Charsets.UTF_8.name())
-        val response = request(config, "/api/v1/agent/jobs/next?device_id=" + device + "&wait_seconds=20&limit=20", "GET", null, 25_000)
-        if (response.first == 204 || response.second.isBlank()) return emptyList()
-        val json = JSONObject(response.second)
+        val response = request(
+            config,
+            "/api/v1/agent/jobs/next?device_id=" + device + "&wait_seconds=20&limit=20",
+            "GET",
+            null,
+            25_000
+        )
+
+        if (response.first == 204) return emptyList()
+        if (response.first != 200) {
+            throw IOException("Job polling must return HTTP 200 or 204; received HTTP " + response.first + ".")
+        }
+        if (response.second.isBlank()) {
+            throw IOException("Job polling returned an empty HTTP 200 response; expected JSON with jobs or job.")
+        }
+
+        val json = try {
+            JSONObject(response.second)
+        } catch (_: Exception) {
+            throw IOException("Job polling returned invalid JSON.")
+        }
+
         val batch = json.optJSONArray("jobs")
         if (batch != null) {
-            return (0 until batch.length()).mapNotNull { batch.optJSONObject(it) }.take(20)
+            if (batch.length() > 20) throw IOException("Job polling returned more than the allowed 20 jobs.")
+            val jobs = ArrayList<JSONObject>(batch.length())
+            for (index in 0 until batch.length()) {
+                val job = batch.optJSONObject(index)
+                    ?: throw IOException("Job polling returned a non-object item in jobs.")
+                jobs.add(job)
+            }
+            return jobs
         }
-        val single = json.optJSONObject("job")
-        if (single != null) return listOf(single)
-        return if (json.has("job") && json.isNull("job")) emptyList() else listOf(json)
+
+        if (json.has("job")) {
+            if (json.isNull("job")) return emptyList()
+            val single = json.optJSONObject("job")
+                ?: throw IOException("Job polling returned an invalid job field.")
+            return listOf(single)
+        }
+
+        throw IOException("Job polling response must contain a jobs array or job object.")
     }
 
     fun nextJob(config: AppConfig): JSONObject? = nextJobs(config).firstOrNull()
