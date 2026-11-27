@@ -65,7 +65,7 @@ jobs:
           test -s "release-assets/EUJOR-SMS-USSD-Gateway-${RELEASE_TAG}.apk"
 
       - name: Create annotated version tag, GitHub Release and attach APK
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
           TARGET_SHA: ${{ steps.release.outputs.target_sha }}
