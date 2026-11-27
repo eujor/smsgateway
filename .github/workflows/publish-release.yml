@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows: ["Android build"]
     types: [completed]
-    branches: [main]
+    branches: [version-2]
   workflow_dispatch:
     inputs:
       tag_name:
@@ -83,9 +83,9 @@ jobs:
             const { owner, repo } = context.repo;
 
             if (context.eventName === 'workflow_run') {
-              const currentMain = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
-              if (currentMain.data.commit.sha !== targetSha) {
-                throw new Error('Skipping superseded Android build; main has moved to ' + currentMain.data.commit.sha + '.');
+              const currentVersion2 = await github.rest.repos.getBranch({ owner, repo, branch: 'version-2' });
+              if (currentVersion2.data.commit.sha !== targetSha) {
+                throw new Error('Skipping superseded Android build; version-2 has moved to ' + currentVersion2.data.commit.sha + '.');
               }
             }
 
@@ -130,7 +130,7 @@ jobs:
               '## APK',
               'The attached APK is the EUJOR SMS & USSD Gateway ' + tagName + ' application package.',
               '',
-              'See the [README](https://github.com/' + owner + '/' + repo + '/blob/main/README.md) and [API protocol](https://github.com/' + owner + '/' + repo + '/blob/main/docs/API_PROTOCOL.md) for the complete integration contract.',
+              'See the [README](https://github.com/' + owner + '/' + repo + '/blob/version-2/README.md) and [API protocol](https://github.com/' + owner + '/' + repo + '/blob/version-2/docs/API_PROTOCOL.md) for the complete integration contract.',
               '',
               'Physical-device validation remains necessary for SIM selection and carrier/OEM-specific USSD behaviour.'
             ].join('\n');
