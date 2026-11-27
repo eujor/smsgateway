@@ -216,7 +216,8 @@ class GatewayAgentService : Service() {
         val jobs = try {
             GatewayApi.nextJobs(config).also {
                 pollFailureCount = 0
-                nextPollAllowedAt = 0L
+                // A receiver that returns immediately must not cause a tight GET loop.
+                nextPollAllowedAt = android.os.SystemClock.elapsedRealtime() + SUCCESSFUL_POLL_INTERVAL_MS
             }
         } catch (e: Exception) {
             pollFailureCount = (pollFailureCount + 1).coerceAtMost(5)
@@ -274,5 +275,6 @@ class GatewayAgentService : Service() {
         const val ACTION_STOP = "com.eujor.smsgateway.action.STOP_AGENT"
         private const val CHANNEL_ID = "eujor_gateway_agent"
         private const val NOTIFICATION_ID = 701
+        private const val SUCCESSFUL_POLL_INTERVAL_MS = 5_000L
     }
 }
