@@ -19,8 +19,9 @@ Maintain a universal, self-hosted Android SMS/USSD agent for `eujor/smsgateway`.
 - Server URL and API key must be editable without rebuilding.
 
 ## Engineering and security rules
-- Minimum SDK 26; compile SDK 37; target SDK 36 unless current Android compatibility requirements justify an update.
-- JDK 17; AGP 9.6.0; Gradle 9.8.2; built-in Kotlin 2.4.20 and Compose compiler plugin 2.4.20.
+- Minimum SDK 26; compile SDK and target SDK 36.
+- JDK 17, Android Gradle Plugin 8.13.2, Gradle 8.13, Kotlin 2.2.21 and Compose compiler plugin 2.2.21.
+- Compose BOM 2025.12.00 (Compose 1.10 / Material 3 1.4).
 - Keep dependency versions explicit.
 - HTTPS only. Never disable TLS verification or allow cleartext traffic.
 - Language-neutral JSON protocol. No PHP/Go-specific assumptions in the Android parser.

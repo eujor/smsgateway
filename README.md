@@ -17,9 +17,9 @@ It still needs successful CI compilation and physical-device validation across A
 A blank receiver URL does not block a manual local test. The app warns that the operation will run on the phone and its result will remain local rather than being sent to a receiver server.
 
 ## Build
-Requirements: JDK 17, Android SDK Platform 37, Build Tools 37.0.0 and Gradle 9.8.2.
+Requirements: JDK 17, Android SDK Platform 36, Build Tools 36.0.0 and Gradle 8.13.
 
-Open the repository root in a compatible Android Studio release and sync Gradle. To build from a shell with Gradle 9.8.2 installed, run:
+Open the repository root in Android Studio and sync Gradle. From a shell with Gradle 8.13 installed, build with:
 
 ```bash
 gradle --no-daemon assembleDebug
