@@ -15,7 +15,7 @@ import com.eujor.smsgateway.gateway.GatewayApi
 import org.json.JSONObject
 
 object UssdExecutor {
-    fun sendDirect(context: Context, config: AppConfig, jobId: String, requestId: String, code: String, simSlot: Int) {
+    fun sendDirect(context: Context, config: AppConfig, jobId: String, requestId: String, code: String, simSlot: Int, trackingId: String = "") {
         check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) { "Direct USSD requires Android 8.0 (API 26) or newer." }
         val base = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         val manager = telephonyManagerForSlot(context, base, simSlot)
@@ -26,7 +26,15 @@ object UssdExecutor {
                 LogStore.append(context, "USSD response received for job " + jobId + ".")
                 runCatching {
                     GatewayApi.postResult(context, config, jobId, requestId, "ussd", "completed",
-                        JSONObject().put("code", code).put("response", text).put("sim_slot", simSlot))
+                        JSONObject()
+                        .put("code", code)
+                        .put("response", text)
+                        .put("last_response", text)
+                        .put("session_ended", true)
+                        .put("end_reason", "direct_response")
+                        .put("carrier_outcome", UssdResultStore.classifyCarrierOutcome(text))
+                        .put("sim_slot", simSlot)
+                        .put("tracking_id", trackingId.takeIf { it.isNotBlank() }))
                 }.onFailure { LogStore.append(context, "USSD result could not be sent to receiver server.") }
                 UssdResultStore.finish(text)
                 UssdChainState.finish("completed")
@@ -38,7 +46,14 @@ object UssdExecutor {
                 LogStore.append(context, "USSD request failed (Android code " + failureCode + ").")
                 runCatching {
                     GatewayApi.postResult(context, config, jobId, requestId, "ussd", "failed",
-                        JSONObject().put("failure_code", failureCode))
+                        JSONObject()
+                            .put("response", UssdResultStore.latest)
+                            .put("last_response", UssdResultStore.latest)
+                            .put("session_ended", true)
+                            .put("end_reason", "android_request_failed")
+                            .put("carrier_outcome", "android_request_failed")
+                            .put("failure_code", failureCode)
+                            .put("tracking_id", trackingId.takeIf { it.isNotBlank() }))
                 }
             }
         }, Handler(Looper.getMainLooper()))

@@ -60,7 +60,7 @@ object ManualRequestParser {
         }
 
         val requestId = (root.opt("request_id") as? String)?.takeIf { it.isNotBlank() }
-            ?: "manual-" + UUID.randomUUID()
+            ?: com.eujor.smsgateway.data.UuidV7.generate()
         val jobId = (root.opt("job_id") as? String)?.takeIf { it.isNotBlank() } ?: requestId
         val sessionId = root.opt("session_id") as? String ?: ""
 

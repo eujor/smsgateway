@@ -35,6 +35,8 @@ import com.eujor.smsgateway.data.LogStore
 import com.eujor.smsgateway.data.DailyMaintenance
 import com.eujor.smsgateway.data.SecureConfigStore
 import com.eujor.smsgateway.gateway.GatewayApi
+import com.eujor.smsgateway.gateway.ResultOutbox
+import com.eujor.smsgateway.gateway.PendingCallbackSummary
 import com.eujor.smsgateway.gateway.ResultOutboxWorker
 import com.eujor.smsgateway.gateway.GatewayRequest
 import com.eujor.smsgateway.gateway.ManualRequestParser
@@ -63,14 +65,23 @@ fun GatewayApp() {
     var serverStatus by remember { mutableStateOf("Not checked") }
     var activityStatus by remember { mutableStateOf("Ready") }
     var logs by remember { mutableStateOf(LogStore.read(context)) }
+    var agentConnected by remember { mutableStateOf(GatewayAgentService.isRunning()) }
     var ussdResponse by remember { mutableStateOf(UssdResultStore.latest) }
+    var pendingUssdCallbacks by remember { mutableStateOf(emptyList<PendingCallbackSummary>()) }
+    fun refreshPendingUssd() { ResultOutbox(context).use { pendingUssdCallbacks = it.pendingFinishedUssd() } }
+    fun killPendingUssd(eventId: String) {
+        ResultOutboxWorker.cancel(context, eventId)
+        LogStore.append(context, "Pending USSD callback retry cancelled by user: " + eventId)
+        refreshPendingUssd()
+        logs = LogStore.read(context)
+    }
     val executor = remember { Executors.newSingleThreadExecutor() }
 
     fun refreshLogs() { logs = LogStore.read(context) }
 
     fun startAgent() {
-        if (!GatewayApi.remoteConfigured(config)) {
-            activityStatus = "Enter an HTTPS receiver URL and device API key in Settings."
+        if (!GatewayApi.agentConfigured(config)) {
+            activityStatus = "Enter a device API key and configure an HTTPS receiver URL or an enabled heartbeat URL in Settings."
             return
         }
         ContextCompat.startForegroundService(context, Intent(context, GatewayAgentService::class.java))
@@ -129,12 +140,21 @@ fun GatewayApp() {
                         check(UssdChainState.matches(request.sessionId)) { "No active USSD session matches this session_id." }
                         UssdAccessibilityService.submitInput(request.sessionId, request.inputs.first())
                         GatewayApi.postResult(context, config, request.jobId, request.requestId, "ussd", "input_queued",
-                            JSONObject().put("session_id", request.sessionId))
+                            JSONObject().put("session_id", request.sessionId).put("tracking_id", UssdChainState.trackingId))
                     }
                     request.type == "ussd" && request.action == "cancel" -> {
                         UssdChainState.finish("cancelled")
                         UssdResultStore.finish("USSD session cancelled.")
-                        GatewayApi.postResult(context, config, request.jobId, request.requestId, "ussd", "cancelled", JSONObject())
+                        val lastResponse = UssdResultStore.latest
+                        GatewayApi.postResult(context, config, request.jobId, request.requestId, "ussd", "cancelled",
+                            JSONObject()
+                                .put("session_id", request.sessionId)
+                                .put("response", lastResponse)
+                                .put("last_response", lastResponse)
+                                .put("session_ended", true)
+                                .put("end_reason", "cancelled")
+                                .put("carrier_outcome", UssdResultStore.classifyCarrierOutcome(lastResponse))
+                                .put("tracking_id", UssdChainState.trackingId))
                     }
                     request.type == "ussd" && request.inputs.isNotEmpty() -> {
                         check(!UssdChainState.isActive()) { "Another USSD session is already active. Finish it before starting another." }
@@ -156,7 +176,7 @@ fun GatewayApp() {
                         check(!UssdChainState.isActive()) { "Another USSD session is already active. Finish it before starting another." }
                         UssdChainState.begin(request.requestId, request.jobId, request.simSlot, emptyList())
                         UssdResultStore.update("USSD request sent. Waiting for the network...")
-                        UssdExecutor.sendDirect(context, config, request.jobId, request.requestId, request.ussdCode, request.simSlot)
+                        UssdExecutor.sendDirect(context, config, request.jobId, request.requestId, request.ussdCode, request.simSlot, UssdChainState.trackingId)
                     }
                 }
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -182,9 +202,12 @@ fun GatewayApp() {
     LaunchedEffect(Unit) {
         DailyMaintenance.runIfDue(context)
         ResultOutboxWorker.kick(context)
+        refreshPendingUssd()
         while (true) {
             ussdResponse = UssdResultStore.latest
-            delay(700)
+            agentConnected = GatewayAgentService.isRunning()
+            refreshPendingUssd()
+            delay(1500)
         }
     }
 
@@ -231,7 +254,9 @@ fun GatewayApp() {
                     onDisconnect = { stopAgent() },
                     onCheckServer = { checkServer() },
                     onSettings = { settingsOpen = true },
-                    onRefresh = { refreshLogs() }
+                    agentConnected = agentConnected,
+                    pendingUssdCallbacks = pendingUssdCallbacks,
+                    onKillPendingUssd = { killPendingUssd(it) }
                 )
                 MainTab.TOOLS -> ToolsScreen(
                     config, ussdResponse, activityStatus,
@@ -294,12 +319,13 @@ private fun HomeScreen(
     onDisconnect: () -> Unit,
     onCheckServer: () -> Unit,
     onSettings: () -> Unit,
-    onRefresh: () -> Unit
+    agentConnected: Boolean,
+    pendingUssdCallbacks: List<PendingCallbackSummary>,
+    onKillPendingUssd: (String) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val permissions = buildList {
         add(Manifest.permission.SEND_SMS)
-        add(Manifest.permission.RECEIVE_SMS)
         add(Manifest.permission.CALL_PHONE)
         add(Manifest.permission.READ_PHONE_STATE)
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
@@ -313,7 +339,6 @@ private fun HomeScreen(
         ContextCompat.checkSelfPermission(context, permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
     val granted = permissions.count { hasPermission(it) }
     val smsSendGranted = hasPermission(Manifest.permission.SEND_SMS)
-    val smsReceiveGranted = hasPermission(Manifest.permission.RECEIVE_SMS)
     val phoneGranted = hasPermission(Manifest.permission.CALL_PHONE)
     val phoneStateGranted = hasPermission(Manifest.permission.READ_PHONE_STATE)
     val notificationsGranted = Build.VERSION.SDK_INT < 33 || hasPermission(Manifest.permission.POST_NOTIFICATIONS)
@@ -332,9 +357,43 @@ private fun HomeScreen(
                 Spacer(Modifier.height(5.dp))
                 Text("Connect this phone to a self-hosted SMS and USSD receiver server.")
                 Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onConnect) { Icon(Icons.Filled.Cloud, null); Spacer(Modifier.size(6.dp)); Text("Connect") }
-                    OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        color = if (agentConnected) androidx.compose.ui.graphics.Color(0xFFE8F5E9) else androidx.compose.ui.graphics.Color(0xFFFFEBEE),
+                        shape = MaterialTheme.shapes.small
+                    ) {
+                        Text(
+                            if (agentConnected) "CONNECTED" else "DISCONNECTED",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            color = if (agentConnected) androidx.compose.ui.graphics.Color(0xFF16803C) else androidx.compose.ui.graphics.Color(0xFFB3261E),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (agentConnected) {
+                        Button(onClick = onConnect, colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF16803C))) { Text("Connect") }
+                    } else OutlinedButton(onClick = onConnect) { Text("Connect") }
+                    if (!agentConnected) {
+                        Button(onClick = onDisconnect, colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFFB3261E))) { Text("Disconnect") }
+                    } else OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
+                }
+            }
+        }
+        Card {
+            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Unconfirmed finished USSD", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("Final USSD callbacks awaiting server acknowledgement. Kill stops future retries.", style = MaterialTheme.typography.bodySmall)
+                if (pendingUssdCallbacks.isEmpty()) Text("No unconfirmed finished USSD callbacks.")
+                pendingUssdCallbacks.forEach { item ->
+                    Divider()
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Status: ${item.status} · retry attempts: ${item.attempts}/6", fontWeight = FontWeight.SemiBold)
+                            Text("Job: ${item.jobId} · Request: ${item.requestId}", style = MaterialTheme.typography.bodySmall)
+                            Text("Event: ${item.eventId}", style = MaterialTheme.typography.labelSmall)
+                        }
+                        TextButton(onClick = { onKillPendingUssd(item.eventId) }) { Text("Kill") }
+                    }
                 }
             }
         }
@@ -347,31 +406,44 @@ private fun HomeScreen(
         Card {
             Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Setup & connection", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Button(onClick = { permissionLauncher.launch(permissions.toTypedArray()) }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Grant SMS / Phone permissions")
+                if (granted == permissions.size) {
+                    Button(onClick = { permissionLauncher.launch(permissions.toTypedArray()) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF16803C))) {
+                        Text("SMS / Phone permissions granted")
+                    }
+                } else {
+                    OutlinedButton(onClick = { permissionLauncher.launch(permissions.toTypedArray()) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Grant SMS / Phone permissions")
+                    }
                 }
-                OutlinedButton(
-                    onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text(if (accessibility) "Manage USSD accessibility" else "Enable USSD accessibility") }
-                OutlinedButton(
-                    onClick = {
+                if (accessibility) {
+                    Button(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF16803C))) {
+                        Text("USSD accessibility enabled")
+                    }
+                } else OutlinedButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Enable USSD accessibility")
+                }
+                if (batteryAllowed) {
+                    Button(onClick = {
                         try {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + context.packageName)))
-                            } else context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                        } catch (_: Exception) {
-                            context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Allow background operation (battery)") }
-                OutlinedButton(onClick = onCheckServer, modifier = Modifier.fillMaxWidth()) { Text("Test receiver server") }
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + context.packageName)))
+                            else context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        } catch (_: Exception) { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                    }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF16803C))) {
+                        Text("Background battery exemption active")
+                    }
+                } else OutlinedButton(onClick = {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + context.packageName)))
+                        else context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    } catch (_: Exception) { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                }, modifier = Modifier.fillMaxWidth()) { Text("Allow background operation (battery)") }
+                if (serverStatus.contains("responded", true)) {
+                    Button(onClick = onCheckServer, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF16803C))) { Text("Receiver server responding") }
+                } else OutlinedButton(onClick = onCheckServer, modifier = Modifier.fillMaxWidth()) { Text("Test receiver server") }
                 OutlinedButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) { Text("Configure server URL and device key") }
                 Divider()
                 Text("Permission status", fontWeight = FontWeight.Bold)
                 PermissionStatusRow("Send SMS", smsSendGranted)
-                PermissionStatusRow("Receive SMS", smsReceiveGranted)
                 PermissionStatusRow("Phone / USSD", phoneGranted)
                 PermissionStatusRow("SIM information", phoneStateGranted)
                 if (Build.VERSION.SDK_INT >= 33) PermissionStatusRow("Notifications", notificationsGranted)
@@ -382,12 +454,11 @@ private fun HomeScreen(
         Card {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text("Sensitive access notice", fontWeight = FontWeight.Bold)
-                Text("Incoming SMS messages are forwarded only to the HTTPS receiver you configure. The optional USSD assistant reads the visible carrier USSD window only while a USSD session is active, so it can display prompts and enter responses you provide.")
+                Text("Ordinary incoming SMS messages are not read or forwarded. The USSD assistant reads the visible carrier USSD window only during an active USSD session so it can report carrier prompts and enter responses you provide.")
             }
         }
         Text("Latest activity: " + activityStatus, style = MaterialTheme.typography.bodyMedium)
         Text("Keep the phone powered, online and connected to the mobile network while the gateway is active.", style = MaterialTheme.typography.bodySmall)
-        TextButton(onClick = onRefresh) { Text("Refresh logs") }
     }
 }
 
@@ -454,14 +525,14 @@ private fun ToolsScreen(
   "type": "ussd",
   "action": "execute",
   "sim_slot": 1,
-  "code": "*144#",
+  "code": "*188#",
   "inputs": ["1", "254712345678"]
 }"""
         )
     }
     var validation by remember { mutableStateOf("Paste or edit a JSON request, then validate it.") }
     var isValid by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf("*144#") }
+    var code by remember { mutableStateOf("*188#") }
     var inputs by remember { mutableStateOf("") }
     var slot by remember { mutableStateOf("1") }
 
@@ -490,7 +561,7 @@ private fun ToolsScreen(
         Text("Latest action: " + activityStatus, style = MaterialTheme.typography.bodySmall)
         Divider()
         Text("Quick USSD test", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        OutlinedTextField(code, { code = it }, modifier = Modifier.fillMaxWidth(), label = { Text("USSD code, e.g. *144#") })
+        OutlinedTextField(code, { code = it }, modifier = Modifier.fillMaxWidth(), label = { Text("USSD code, e.g. *188#") })
         OutlinedTextField(
             slot, { slot = it.filter(Char::isDigit).take(1) },
             modifier = Modifier.fillMaxWidth(), label = { Text("SIM slot (1 = SIM 1)") },
@@ -506,9 +577,9 @@ private fun ToolsScreen(
                 val ussd = code.trim()
                 if (!ussd.startsWith("*") || !ussd.endsWith("#")) {
                     isValid = false
-                    validation = "Enter a USSD code such as *144#."
+                    validation = "Enter a USSD code such as *188#."
                 } else {
-                    val id = "manual-" + UUID.randomUUID()
+                    val id = com.eujor.smsgateway.data.UuidV7.generate()
                     val chain = inputs.lines().filter { it.isNotBlank() }
                     isValid = true
                     validation = "USSD test starting..."
@@ -574,12 +645,13 @@ private fun RequirementsScreen() {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Requirements & protocol", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         RequirementCard("Application", "Version ${BuildConfig.VERSION_NAME} (version code ${BuildConfig.VERSION_CODE})\nMinimum Android: Android 8.0 Oreo (API 26)\nCompile SDK: 36\nTarget SDK: 36\nDevice identity: app-generated UUID; IMEI/IMSI not required.")
-        RequirementCard("Permissions", "SMS send: SEND_SMS\nIncoming SMS: RECEIVE_SMS\nUSSD / call chain: CALL_PHONE\nSIM selection: READ_PHONE_STATE\nBackground agent: foreground service and notifications\nMulti-step USSD: enable EUJOR USSD Session Assistant in Android Accessibility settings.")
-        RequirementCard("Server → app input", "SMS: type=sms, action=send, to and message. USSD: type=ussd, action=execute and code. Optional sim_slot is 1-based. Optional inputs is an array of strings entered as prompts appear. Server-driven continuation uses action=continue with session_id and input.")
+        RequirementCard("Permissions", "SMS send: SEND_SMS\nUSSD / call chain: CALL_PHONE\nSIM selection: READ_PHONE_STATE\nBackground agent: foreground service and notifications\nMulti-step USSD: enable EUJOR USSD Session Assistant in Android Accessibility settings.")
+        RequirementCard("Server → app input", "SMS: type=sms, action=send, to and message. USSD: type=ussd, action=execute, code and unique tracking_id. Optional inputs is an array of strings entered one prompt at a time with a 2-second minimum delay. Continuation and cancellation must repeat the same tracking_id and session_id.")
         RequirementCard("App → server output", "Every callback has a unique event_id. The receiver MUST return HTTP 200 with JSON {success:true,event_id:<same event_id>} to confirm receipt. HTTP 202, other status codes, missing JSON or mismatched event_id are not accepted. The encrypted outbox retries up to 6 times, 10 seconds apart, then waits 5 minutes before another batch; restored connectivity triggers an immediate retry. Events expire after 12 hours. Pending callbacks are separate from 02:00 log/job maintenance and are not truncated by it. Receiver must deduplicate event_id.")
-        RequirementCard("USSD modes", "Direct mode uses TelephonyManager.sendUssdRequest() for a single request and response. Chained mode opens the visible carrier USSD dialog and uses accessibility to enter queued responses. The server can also send another input after receiving a menu response. OEM and carrier behaviour varies.")
+        RequirementCard("USSD modes", "Direct mode uses TelephonyManager.sendUssdRequest() for a single request and response. Chained mode opens the visible carrier USSD dialog and enters each queued response with a 2-second minimum interval. Every server-triggered USSD callback carries its tracking_id. OEM and carrier behaviour varies.")
+        RequirementCard("Heartbeat", "Heartbeat is optional and has its own on/off switch and complete HTTPS endpoint URL in Settings. When enabled, the app sends POST directly to that exact URL about every 60 seconds; it does not append a path or use the SMS receiver URL. When disabled, no heartbeat request is sent.")
         RequirementCard("Security", "HTTPS only. Per-device bearer key encrypted with Android Keystore AES-GCM. The app can generate a random 256-bit device key; register the same key with the receiver server. UUID device ID; no IMEI/IMSI. Queue payloads are encrypted at rest. Avoid storing SIM PINs or mobile-money PINs in sample JSON. Inputs are excluded from local logs.")
-        RequirementCard("Installation notice", "This app requests SMS and optional Accessibility capabilities for its core gateway functions. Google Play Protect may block installations from internet-sideloading sources when RECEIVE_SMS and Accessibility are declared. Install only builds from the trusted EUJOR repository; keep device protection enabled whenever possible.")
+        RequirementCard("Installation notice", "This app requests SMS and optional Accessibility capabilities for its core gateway functions. Google Play Protect may review installations from internet-sideloading sources because the app uses SMS and Accessibility capabilities. Install only builds from the trusted EUJOR repository; keep device protection enabled whenever possible.")
         LinkButton("Open API protocol documentation") {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/eujor/smsgateway/blob/main/docs/API_PROTOCOL.md")))
         }
@@ -617,6 +689,8 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
     var apiKey by remember { mutableStateOf(initial.apiKey) }
     var deviceId by remember { mutableStateOf(initial.deviceId) }
     var deviceName by remember { mutableStateOf(initial.deviceName) }
+    var heartbeatUrl by remember { mutableStateOf(initial.heartbeatUrl) }
+    var heartbeatEnabled by remember { mutableStateOf(initial.heartbeatEnabled) }
     var showKey by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -626,9 +700,25 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
         onDismissRequest = onDismiss,
         title = { Text("Gateway settings") },
         text = {
-            Column(Modifier.fillMaxWidth().height(520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.fillMaxWidth().height(640.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(server, { server = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Receiver server URL") }, placeholder = { Text("https://gateway.example.com") }, singleLine = true)
                 Text("Enter the base URL, not an API path. Remote connections require HTTPS.", style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Heartbeat", fontWeight = FontWeight.SemiBold)
+                        Text(if (heartbeatEnabled) "Enabled — sent only to the URL below." else "Disabled — no heartbeat requests are sent.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(checked = heartbeatEnabled, onCheckedChange = { heartbeatEnabled = it })
+                }
+                OutlinedTextField(
+                    value = heartbeatUrl,
+                    onValueChange = { heartbeatUrl = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Complete heartbeat URL") },
+                    placeholder = { Text("https://example.com/heartbeat.php") },
+                    singleLine = true
+                )
+                Text("Enter the complete endpoint, including any PHP filename or path. The app sends POST to this exact URL and never appends a path or falls back to the receiver URL.", style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it },
@@ -674,7 +764,7 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
                 )
                 OutlinedTextField(deviceName, { deviceName = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Device name") }, singleLine = true)
                 OutlinedTextField(deviceId, { deviceId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Device ID (UUID)") }, singleLine = true)
-                TextButton(onClick = { deviceId = UUID.randomUUID().toString() }) { Text("Generate new device ID") }
+                TextButton(onClick = { deviceId = com.eujor.smsgateway.data.UuidV7.generate() }) { Text("Generate new device ID") }
                 if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
             }
         },
@@ -682,8 +772,9 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
             TextButton(onClick = {
                 val normalized = server.trim().trimEnd('/')
                 if (normalized.isNotEmpty() && !normalized.startsWith("https://", true)) error = "Receiver URL must start with https://"
+                else if (heartbeatEnabled && !heartbeatUrl.trim().startsWith("https://", true)) error = "Enabled heartbeat requires its own complete HTTPS URL."
                 else if (deviceId.isBlank() || deviceName.isBlank()) error = "Device ID and device name are required."
-                else onSave(AppConfig(normalized, apiKey.trim(), deviceId.trim(), deviceName.trim()))
+                else onSave(AppConfig(normalized, apiKey.trim(), deviceId.trim(), deviceName.trim(), heartbeatUrl.trim(), heartbeatEnabled))
             }) { Text("Save securely") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }

@@ -4,12 +4,13 @@ import java.util.ArrayDeque
 
 object UssdChainState {
     private const val SESSION_TIMEOUT_MS = 120_000L
-
     @Volatile private var active = false
     @Volatile private var startedAt = 0L
     @Volatile var sessionId: String = ""
         private set
     @Volatile var jobId: String = ""
+        private set
+    @Volatile var trackingId: String = ""
         private set
     @Volatile var simSlot: Int = 1
         private set
@@ -18,10 +19,11 @@ object UssdChainState {
     private val pendingInputs = ArrayDeque<String>()
 
     @Synchronized
-    fun begin(session: String, job: String, slot: Int, inputs: List<String>) {
+    fun begin(session: String, job: String, slot: Int, inputs: List<String>, tracking: String = com.eujor.smsgateway.data.UuidV7.generate()) {
         pendingInputs.clear()
         sessionId = session
         jobId = job
+        trackingId = tracking
         simSlot = slot
         pendingInputs.addAll(inputs)
         startedAt = System.currentTimeMillis()
@@ -29,55 +31,35 @@ object UssdChainState {
         active = true
     }
 
-    @Synchronized
-    fun enqueue(input: String) {
+    @Synchronized fun enqueue(input: String) {
         expireIfNeeded()
         check(active) { "There is no active USSD session." }
         require(pendingInputs.size < 20) { "USSD input queue is full." }
         pendingInputs.addLast(input)
     }
-
-    @Synchronized
-    fun takeNext(): String? {
+    @Synchronized fun peekNext(): String? {
+        expireIfNeeded()
+        return if (!active || pendingInputs.isEmpty()) null else pendingInputs.first
+    }
+    @Synchronized fun takeNext(): String? {
         expireIfNeeded()
         return if (!active || pendingInputs.isEmpty()) null else pendingInputs.removeFirst()
     }
+    @Synchronized fun isActive(): Boolean { expireIfNeeded(); return active }
+    @Synchronized fun matches(session: String): Boolean { expireIfNeeded(); return active && sessionId == session }
+    @Synchronized fun matchesTracking(tracking: String): Boolean { expireIfNeeded(); return active && trackingId == tracking }
 
-    @Synchronized
-    fun isActive(): Boolean {
-        expireIfNeeded()
-        return active
-    }
-
-    @Synchronized
-    fun matches(session: String): Boolean {
-        expireIfNeeded()
-        return active && sessionId == session
-    }
-
-    @Synchronized
-    fun finish(reason: String) {
+    @Synchronized fun finish(reason: String) {
         if (!active) return
         pendingInputs.clear()
         active = false
         startedAt = 0L
         endReason = reason
-        UssdResultStore.finish(
-            when (reason) {
-                "timeout" -> "USSD session timed out."
-                "failed" -> "USSD session failed."
-                "cancelled" -> "USSD session cancelled."
-                else -> ""
-            }
-        )
+        // Preserve the last carrier screen; end reason is reported separately in the final callback.
+        UssdResultStore.finish()
     }
-
-    @Synchronized
-    fun clear() = finish("cancelled")
-
+    @Synchronized fun clear() = finish("cancelled")
     private fun expireIfNeeded() {
-        if (active && System.currentTimeMillis() - startedAt > SESSION_TIMEOUT_MS) {
-            finish("timeout")
-        }
+        if (active && System.currentTimeMillis() - startedAt > SESSION_TIMEOUT_MS) finish("timeout")
     }
 }

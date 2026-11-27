@@ -4,7 +4,6 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.SEND_SMS" />
-    <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -34,10 +33,6 @@
             <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/ussd_accessibility_service" />
         </service>
-        <receiver android:name=".telephony.SmsStatusReceiver" android:exported="false" />
-        <receiver android:name=".telephony.IncomingSmsReceiver" android:enabled="true" android:exported="true"
-            android:permission="android.permission.BROADCAST_SMS">
-            <intent-filter android:priority="500"><action android:name="android.provider.Telephony.SMS_RECEIVED" /></intent-filter>
-        </receiver>
+        
     </application>
 </manifest>

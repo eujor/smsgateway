@@ -15,8 +15,10 @@ import javax.crypto.spec.GCMParameterSpec
 data class AppConfig(
     val serverUrl: String = "",
     val apiKey: String = "",
-    val deviceId: String = UUID.randomUUID().toString(),
-    val deviceName: String = "Android SIM Gateway"
+    val deviceId: String = UuidV7.generate(),
+    val deviceName: String = "Android SIM Gateway",
+    val heartbeatUrl: String = "",
+    val heartbeatEnabled: Boolean = false
 )
 
 object SecureConfigStore {
@@ -37,7 +39,9 @@ object SecureConfigStore {
                 serverUrl = json.optString("server_url"),
                 apiKey = json.optString("api_key"),
                 deviceId = json.optString("device_id").ifBlank { UUID.randomUUID().toString() },
-                deviceName = json.optString("device_name").ifBlank { "Android SIM Gateway" }
+                deviceName = json.optString("device_name").ifBlank { "Android SIM Gateway" },
+                heartbeatUrl = json.optString("heartbeat_url"),
+                heartbeatEnabled = json.optBoolean("heartbeat_enabled", false)
             )
         } catch (_: Exception) {
             AppConfig()
@@ -50,6 +54,8 @@ object SecureConfigStore {
             .put("api_key", config.apiKey)
             .put("device_id", config.deviceId.trim())
             .put("device_name", config.deviceName.trim())
+            .put("heartbeat_url", config.heartbeatUrl.trim())
+            .put("heartbeat_enabled", config.heartbeatEnabled)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getKey())
         val encrypted = cipher.iv + cipher.doFinal(json.toString().toByteArray(Charsets.UTF_8))

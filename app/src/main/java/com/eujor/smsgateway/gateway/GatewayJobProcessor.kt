@@ -57,7 +57,9 @@ object GatewayJobProcessor {
                     }
                     require(!UssdChainState.isActive()) { "Another USSD session is already active." }
 
-                    UssdChainState.begin(requestId, jobId, simSlot, inputs)
+                    val trackingId = job.optString("tracking_id").ifBlank { job.optString("ussd_tracking_id") }
+                    require(trackingId.isNotBlank()) { "Server USSD job is missing tracking_id." }
+                    UssdChainState.begin(requestId, jobId, simSlot, inputs, trackingId)
                     if (inputs.isNotEmpty()) {
                         require(UssdAccessibilityService.isEnabled(context)) {
                             "Enable EUJOR USSD Session Assistant before chained USSD."
@@ -65,7 +67,7 @@ object GatewayJobProcessor {
                         UssdExecutor.startInteractive(context, code, simSlot)
                         LogStore.append(context, "Started chained USSD job " + jobId + " with " + inputs.size + " queued inputs.")
                     } else {
-                        UssdExecutor.sendDirect(context, config, jobId, requestId, code, simSlot)
+                        UssdExecutor.sendDirect(context, config, jobId, requestId, code, simSlot, UssdChainState.trackingId)
                     }
                     return JobProcessOutcome.WAITING_FOR_USSD
                 }
@@ -75,17 +77,30 @@ object GatewayJobProcessor {
                         "USSD continuation requires session_id and a string input."
                     }
                     require(UssdChainState.matches(sessionId)) { "No active session matches the supplied session_id." }
+                    val trackingId = job.optString("tracking_id").ifBlank { job.optString("ussd_tracking_id") }
+                    require(trackingId.isNotBlank() && UssdChainState.matchesTracking(trackingId)) { "USSD tracking_id does not match the active session." }
                     UssdAccessibilityService.submitInput(sessionId, job.getString("input"))
                     GatewayApi.postResult(
                         context, config, jobId, requestId, "ussd", "input_queued",
-                        JSONObject().put("session_id", sessionId)
+                        JSONObject().put("session_id", sessionId).put("tracking_id", trackingId)
                     )
                 }
                 type == "ussd" && action == "cancel" -> {
                     val sessionId = job.optString("session_id")
                     require(UssdChainState.matches(sessionId)) { "No active session matches the supplied session_id." }
+                    val trackingId = job.optString("tracking_id").ifBlank { job.optString("ussd_tracking_id") }
+                    require(trackingId.isNotBlank() && UssdChainState.matchesTracking(trackingId)) { "USSD tracking_id does not match the active session." }
                     UssdChainState.finish("cancelled")
-                    GatewayApi.postResult(context, config, jobId, requestId, "ussd", "cancelled", JSONObject())
+                    val lastResponse = com.eujor.smsgateway.telephony.UssdResultStore.latest
+                    GatewayApi.postResult(context, config, jobId, requestId, "ussd", "cancelled",
+                        JSONObject()
+                            .put("session_id", sessionId)
+                            .put("response", lastResponse)
+                            .put("last_response", lastResponse)
+                            .put("session_ended", true)
+                            .put("end_reason", "cancelled")
+                            .put("carrier_outcome", com.eujor.smsgateway.telephony.UssdResultStore.classifyCarrierOutcome(lastResponse))
+                            .put("tracking_id", trackingId))
                 }
                 else -> throw IllegalArgumentException("Unsupported job type/action: " + type + "/" + action)
             }

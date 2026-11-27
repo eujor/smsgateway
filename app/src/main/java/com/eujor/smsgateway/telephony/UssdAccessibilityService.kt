@@ -19,6 +19,8 @@ import org.json.JSONObject
 class UssdAccessibilityService : AccessibilityService() {
     private var lastScreenFingerprint = ""
     private var lastInputFingerprint = ""
+    private var scheduledPromptFingerprint = ""
+    private val chainHandler = Handler(Looper.getMainLooper())
     private var sawUssdWindow = false
     private val closeHandler = Handler(Looper.getMainLooper())
     private var closeCheck: Runnable? = null
@@ -65,15 +67,24 @@ class UssdAccessibilityService : AccessibilityService() {
                 val sessionId = UssdChainState.sessionId
                 val jobId = UssdChainState.jobId
                 val response = UssdResultStore.latest
+                val trackingId = UssdChainState.trackingId
+                val outcome = UssdResultStore.classifyCarrierOutcome(response)
                 UssdChainState.finish("completed")
                 UssdResultStore.finish()
                 runCatching {
                     GatewayApi.postResult(
                         this, SecureConfigStore.load(this), jobId, sessionId, "ussd", "completed",
-                        JSONObject().put("session_id", sessionId).put("response", response)
+                        JSONObject()
+                            .put("session_id", sessionId)
+                            .put("response", response)
+                            .put("last_response", response)
+                            .put("session_ended", true)
+                            .put("end_reason", "dialog_closed")
+                            .put("carrier_outcome", outcome)
+                            .put("tracking_id", trackingId)
                     )
                 }
-                LogStore.append(this, "USSD dialog closed; session marked completed.")
+                LogStore.append(this, "USSD dialog closed; final carrier response queued (" + outcome + ").")
                 sawUssdWindow = false
                 lastScreenFingerprint = ""
                 lastInputFingerprint = ""
@@ -105,31 +116,56 @@ class UssdAccessibilityService : AccessibilityService() {
                 GatewayApi.postResult(
                     this, SecureConfigStore.load(this), UssdChainState.jobId, UssdChainState.sessionId,
                     "ussd", "screen_updated",
-                    JSONObject().put("session_id", UssdChainState.sessionId).put("response", screenText)
+                    JSONObject().put("session_id", UssdChainState.sessionId).put("response", screenText).put("tracking_id", UssdChainState.trackingId)
                 )
             }
         }
 
-        val submitButton = findSubmitButton(root)
-        if (inputNode != null && submitButton != null) {
+        if (inputNode != null) {
             val promptFingerprint = fingerprint + ":" + (inputNode.viewIdResourceName ?: "edit")
-            if (promptFingerprint != lastInputFingerprint) {
-                val next = UssdChainState.takeNext()
-                if (next != null) {
-                    lastInputFingerprint = promptFingerprint
-                    inputNode.performAction(
+            if (promptFingerprint != lastInputFingerprint && promptFingerprint != scheduledPromptFingerprint &&
+                UssdChainState.peekNext() != null
+            ) {
+                scheduledPromptFingerprint = promptFingerprint
+                chainHandler.postDelayed({
+                    if (!UssdChainState.isActive() || promptFingerprint != scheduledPromptFingerprint) return@postDelayed
+                    val currentRoot = rootInActiveWindow ?: run { scheduledPromptFingerprint = ""; return@postDelayed }
+                    if (!isUssdPackage(currentRoot.packageName?.toString().orEmpty().lowercase())) { scheduledPromptFingerprint = ""; return@postDelayed }
+                    val currentText = collectText(currentRoot).trim()
+                    val currentInput = findEditable(currentRoot)
+                    val currentFingerprint = currentText.hashCode().toString() + ":" + (currentInput?.viewIdResourceName ?: "edit")
+                    if (currentFingerprint != promptFingerprint) {
+                        scheduledPromptFingerprint = ""
+                        return@postDelayed
+                    }
+                    val editable = currentInput ?: run { scheduledPromptFingerprint = ""; return@postDelayed }
+                    val button = findSubmitButton(currentRoot)
+                    val nextInput = UssdChainState.peekNext() ?: run { scheduledPromptFingerprint = ""; return@postDelayed }
+                    val textSet = editable.performAction(
                         AccessibilityNodeInfo.ACTION_SET_TEXT,
-                        Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, next) }
+                        Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, nextInput) }
                     )
-                    submitButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    LogStore.append(this, "Submitted next USSD chain item; input value redacted.")
-                    runCatching {
+                    val textVerified = textSet && editable.refresh() && editable.text?.toString() == nextInput
+                    val clicked = if (!textVerified) false
+                        else if (button != null) button.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        else if (android.os.Build.VERSION.SDK_INT >= 30) editable.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+                        else false
+                    if (clicked) {
+                        UssdChainState.takeNext()
+                        lastInputFingerprint = promptFingerprint
+                        scheduledPromptFingerprint = ""
+                        LogStore.append(this, "Submitted next USSD chain item after 2-second pacing; input value redacted.")
                         GatewayApi.postResult(
                             this, SecureConfigStore.load(this), UssdChainState.jobId, UssdChainState.sessionId,
-                            "ussd", "input_submitted", JSONObject().put("session_id", UssdChainState.sessionId)
+                            "ussd", "input_submitted",
+                            JSONObject().put("session_id", UssdChainState.sessionId).put("tracking_id", UssdChainState.trackingId)
                         )
+                    } else {
+                        LogStore.append(this, "Android did not accept the USSD input action; retrying.")
+                        scheduledPromptFingerprint = ""
+                        chainHandler.postDelayed({ rootInActiveWindow?.let(::processActiveWindow) }, 500L)
                     }
-                }
+                }, 2_000L)
             }
         }
     }
@@ -142,6 +178,7 @@ class UssdAccessibilityService : AccessibilityService() {
         if (activeService === this) activeService = null
         closeCheck?.let(closeHandler::removeCallbacks)
         closeCheck = null
+        chainHandler.removeCallbacksAndMessages(null)
         return super.onUnbind(intent)
     }
 
@@ -168,13 +205,23 @@ class UssdAccessibilityService : AccessibilityService() {
     }
 
     private fun findSubmitButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val label = (node.text?.toString() ?: node.contentDescription?.toString()).orEmpty().lowercase()
-        if (node.isClickable && listOf("send", "reply", "ok", "submit", "continue", "send response").any { label.contains(it) }) return node
-        for (index in 0 until node.childCount) {
-            val found = node.getChild(index)?.let(::findSubmitButton)
-            if (found != null) return found
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        fun walk(current: AccessibilityNodeInfo) {
+            val label = (current.text?.toString().orEmpty() + " " + current.contentDescription?.toString().orEmpty()).lowercase()
+            val className = current.className?.toString().orEmpty()
+            if (current.isClickable && !current.isEditable) {
+                val negative = listOf("cancel", "close", "back", "dismiss", "no").any { label.contains(it) }
+                val labelled = listOf("send","reply","ok","submit","continue","send response","respond","answer","go","yes").any { label.contains(it) }
+                val buttonLike = label.isBlank() && (className.contains("button", true) || className.contains("imagebutton", true))
+                if (!negative && (labelled || buttonLike)) candidates.add(current)
+            }
+            for (index in 0 until current.childCount) current.getChild(index)?.let(::walk)
         }
-        return null
+        walk(node)
+        return candidates.firstOrNull { candidate ->
+            val label = (candidate.text?.toString().orEmpty() + " " + candidate.contentDescription?.toString().orEmpty()).lowercase()
+            listOf("send","reply","ok","submit","continue","send response","respond","answer","go","yes").any { label.contains(it) }
+        } ?: candidates.firstOrNull()
     }
 
     companion object {
@@ -186,6 +233,7 @@ class UssdAccessibilityService : AccessibilityService() {
             activeService?.let { service ->
                 Handler(Looper.getMainLooper()).post {
                     service.lastInputFingerprint = ""
+                    service.scheduledPromptFingerprint = ""
                     service.rootInActiveWindow?.let(service::processActiveWindow)
                 }
             }

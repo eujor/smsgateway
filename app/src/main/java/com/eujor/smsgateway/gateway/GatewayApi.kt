@@ -17,6 +17,10 @@ object GatewayApi {
     fun remoteConfigured(config: AppConfig): Boolean =
         config.serverUrl.startsWith("https://", true) && config.apiKey.isNotBlank()
 
+    fun agentConfigured(config: AppConfig): Boolean =
+        config.apiKey.isNotBlank() && (remoteConfigured(config) ||
+            (config.heartbeatEnabled && config.heartbeatUrl.startsWith("https://", true)))
+
     fun testConnection(config: AppConfig): String {
         val response = request(config, "/api/v1/agent/health", "GET", null, 10_000)
         return "Receiver server responded (HTTP " + response.first + ")."
@@ -30,7 +34,7 @@ object GatewayApi {
             .put("app_version", BuildConfig.VERSION_NAME)
             .put("android_version", Build.VERSION.RELEASE)
             .put("android_sdk", Build.VERSION.SDK_INT)
-            .put("capabilities", JSONArray(listOf("sms.send", "sms.receive", "sms.sent_report", "sms.delivery_report", "ussd.execute", "ussd.chain", "ussd.continue")))
+            .put("capabilities", JSONArray(listOf("sms.send", "sms.sent_report", "sms.delivery_report", "ussd.execute", "ussd.chain", "ussd.continue")))
         val response = request(config, "/api/v1/agent/devices/register", "POST", body, 12_000)
         val status = runCatching { JSONObject(response.second).optString("device_status") }.getOrDefault("")
         if (status != "approved") throw IOException("Device registration is not approved by the receiver server.")
@@ -38,13 +42,18 @@ object GatewayApi {
     }
 
     fun heartbeat(config: AppConfig) {
+        if (!config.heartbeatEnabled) return
+        val endpoint = config.heartbeatUrl.trim()
+        if (!endpoint.startsWith("https://", true)) {
+            throw IOException("Heartbeat is enabled but its complete HTTPS URL is missing or invalid.")
+        }
         val body = JSONObject()
             .put("device_id", config.deviceId)
             .put("device_name", config.deviceName)
             .put("app_version", BuildConfig.VERSION_NAME)
             .put("android_sdk", Build.VERSION.SDK_INT)
             .put("timestamp", Instant.now().toString())
-        request(config, "/api/v1/agent/devices/heartbeat", "POST", body, 10_000)
+        requestUrl(config, endpoint, "POST", body, 10_000)
     }
 
     fun nextJobs(config: AppConfig): List<JSONObject> {
@@ -111,6 +120,7 @@ object GatewayApi {
         JSONObject()
             .put("protocol_version", "1")
             .put("device_id", config.deviceId)
+            .put("tracking_id", result.optString("tracking_id").takeIf { it.isNotBlank() })
             .put("job_id", jobId)
             .put("request_id", requestId)
             .put("type", type)
@@ -121,8 +131,13 @@ object GatewayApi {
     private fun request(config: AppConfig, path: String, method: String, body: JSONObject?, timeoutMs: Int): Pair<Int, String> {
         val base = config.serverUrl.trim().trimEnd('/')
         if (!base.startsWith("https://", true)) throw IOException("Receiver server URL must use HTTPS.")
+        return requestUrl(config, base + path, method, body, timeoutMs)
+    }
+
+    private fun requestUrl(config: AppConfig, endpoint: String, method: String, body: JSONObject?, timeoutMs: Int): Pair<Int, String> {
+        if (!endpoint.startsWith("https://", true)) throw IOException("Endpoint URL must use HTTPS.")
         if (config.apiKey.isBlank()) throw IOException("Device API key is missing.")
-        val connection = (URL(base + path).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             instanceFollowRedirects = false
             connectTimeout = 8_000
@@ -131,6 +146,9 @@ object GatewayApi {
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Authorization", "Bearer " + config.apiKey)
             setRequestProperty("X-Device-ID", config.deviceId)
+            body?.optString("tracking_id")?.takeIf { it.isNotBlank() }?.let {
+                setRequestProperty("X-USSD-Tracking-ID", it)
+            }
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")

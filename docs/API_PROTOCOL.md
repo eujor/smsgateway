@@ -1,4 +1,4 @@
-# EUJOR SMS & USSD Gateway Protocol v1
+# EUJOR SMS & USSD Gateway Protocol v2
 
 This language-neutral contract connects the Android SIM agent to any self-hosted receiver server (PHP, Go, Python, Node.js, Java, etc.).
 
@@ -15,7 +15,7 @@ Never reuse or expose the Android device key to a requesting application. Never 
 
 - HTTPS only, with normal TLS certificate and hostname validation.
 - UTF-8 JSON using `application/json`.
-- Every device has a unique per-device bearer API key and an app-generated UUID. The Android app can generate a cryptographically random 256-bit key locally; register that exact key for the device in the receiver server before connecting. A server may alternatively issue a key for the user to paste into the app.
+- Every device has a unique per-device bearer API key and an app-generated UUIDv7 (time-ordered UUID). Existing registered device IDs remain unchanged when upgrading. Receiver-generated `job_id` and `request_id` values SHOULD also use UUIDv7 rather than auto-incrementing integers; the Android agent preserves the server-supplied IDs exactly. Callback `event_id` values are generated as UUIDv7. The Android app can generate a cryptographically random 256-bit key locally; register that exact key for the device in the receiver server before connecting. A server may alternatively issue a key for the user to paste into the app.
 - Do not use IMEI or IMSI as device identity.
 - Authenticated device requests include:
   - `Authorization: Bearer <DEVICE_API_KEY>`
@@ -62,12 +62,13 @@ Body:
   "type": "ussd",
   "action": "execute",
   "sim_slot": 1,
-  "code": "*144#",
+  "code": "*188#",
+  "tracking_id": "ussd-019acb20-7b90-7a21-a7a0-0a1b2c3d4e5f",
   "inputs": ["2"]
 }
 ```
 
-The phone enters each string only when a subsequent USSD prompt appears. Do not concatenate all inputs into a single USSD command.
+The phone enters each string only when a subsequent USSD prompt appears, with a minimum 2-second delay between inputs. Do not concatenate all inputs into a single USSD command. Every server-triggered USSD job must include a unique tracking_id; continuation and cancel jobs must repeat the same tracking_id.
 
 ### Server-driven interactive USSD
 
@@ -78,11 +79,12 @@ The receiver server should expose a continuation route for the requesting applic
 ```json
 {
   "session_id": "ussd-session-1001",
+  "tracking_id": "ussd-019acb20-7b90-7a21-a7a0-0a1b2c3d4e5f",
   "input": "254712345678"
 }
 ```
 
-The receiver queues a `type=ussd, action=continue` job for the Android device. The agent submits that value when its active USSD dialog is ready.
+The receiver queues a `type=ussd, action=continue` job for the Android device, repeating the original `tracking_id` unchanged. The tracking ID is carried in the job JSON because a long-poll response can contain multiple jobs with different tracking IDs; the app echoes it in the callback HTTP header and JSON body. The agent submits that value when its active USSD dialog is ready.
 
 To inspect a transaction, provide:
 
@@ -140,10 +142,10 @@ Input:
   "protocol_version": "1",
   "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
   "device_name": "Office Safaricom",
-  "app_version": "1.0.0-alpha01",
+  "app_version": "2.0.0",
   "android_version": "15",
   "android_sdk": 35,
-  "capabilities": ["sms.send", "sms.receive", "sms.sent_report", "sms.delivery_report", "ussd.execute", "ussd.chain", "ussd.continue"]
+  "capabilities": ["sms.send", "sms.sent_report", "sms.delivery_report", "ussd.execute", "ussd.chain", "ussd.continue"]
 }
 ```
 
@@ -179,7 +181,7 @@ The server may respond with `pending` or `revoked`; those devices must not recei
 }
 ```
 
-Return HTTP 200 with a JSON acknowledgement. Android sends a heartbeat approximately every 60 seconds.
+Return HTTP 200 with a JSON acknowledgement. Heartbeat is optional and can be enabled or disabled in app Settings. When enabled, the app sends POST approximately every 60 seconds to the complete HTTPS URL entered in the dedicated Heartbeat URL field. The app uses that URL exactly as entered: it does not append a path and never derives it from or sends it to the receiver/SMS server URL. The heartbeat body contains device_id, device_name, app_version, android_sdk and timestamp. The endpoint updates last_seen/online status and lets the server detect offline devices. It is not a USSD or SMS event.
 
 ## 7. Device job polling
 
@@ -217,11 +219,11 @@ A carrier may not provide delivery reports. Never treat `sent` as `delivered`.
 
 ## 9. Incoming SMS
 
-When RECEIVE_SMS permission is granted, Android posts result type `sms.incoming` with `from`, `message` and `received_at`. The device may not identify the receiving SIM slot consistently. Store incoming messages according to the operator's data-retention policy; OTPs and banking alerts must not appear in general logs.
+Ordinary incoming SMS messages are never forwarded to the receiver. The broadcast receiver intentionally performs no forwarding. The server receives only results generated by explicit gateway SMS jobs and app-initiated/server-triggered USSD operations.
 
 ## 10. Direct USSD
 
-A direct request uses `type=ussd`, `action=execute`, `code` (for example `*144#`), job/request IDs and optional 1-based `sim_slot`. With no `inputs`, the app calls Android's TelephonyManager USSD API and returns one response or a failure.
+A direct request uses `type=ussd`, `action=execute`, `code` (for example `*188#`), job/request IDs and optional 1-based `sim_slot`. With no `inputs`, the app calls Android's TelephonyManager USSD API and returns one response or a failure.
 
 ## 11. Chained / interactive USSD
 
@@ -234,12 +236,12 @@ To start a preloaded chain:
   "type": "ussd",
   "action": "execute",
   "sim_slot": 1,
-  "code": "*144#",
+  "code": "*188#",
   "inputs": ["3", "254712345678"]
 }
 ```
 
-The app opens the visible carrier USSD dialog and, with the user-enabled Accessibility Service, enters each queued value when an editable prompt appears. Inputs are entered one at a time, not sent as one concatenated string.
+The app opens the visible carrier USSD dialog and, with the user-enabled Accessibility Service, enters each queued value when an editable prompt appears. Inputs are entered one at a time with a minimum 2-second delay between submissions, not sent as one concatenated string. Every server-triggered execute job MUST include a unique tracking_id; continuation and cancel jobs MUST repeat the same tracking_id and session_id.
 
 For unpredictable menus:
 1. Android reports `screen_updated` with `session_id` and the visible prompt text.
@@ -251,6 +253,7 @@ For unpredictable menus:
   "type": "ussd",
   "action": "continue",
   "session_id": "session-ussd-10",
+  "tracking_id": "ussd-019acb20-7b90-7a21-a7a0-0a1b2c3d4e5f",
   "input": "2"
 }
 ```
@@ -279,7 +282,9 @@ Example request:
 }
 ```
 
-**The receiver MUST return HTTP 200 and this JSON acknowledgement:**
+Every USSD callback includes the unchanged `tracking_id` in the JSON envelope and the `X-USSD-Tracking-ID` HTTP header. Ordinary incoming SMS is not forwarded and no `sms.incoming` event is emitted. Up to four independent callback events can be sent concurrently, each retaining its own acknowledgement and retry state.
+
+The receiver MUST return HTTP 200 and this JSON acknowledgement:
 ```json
 {
   "success": true,
@@ -296,6 +301,8 @@ Example request:
 - A successful HTTP 200 acknowledgement confirms that the receiver accepted and durably recorded the callback event. It does NOT prove that an SMS reached its recipient or that a USSD transaction succeeded commercially.
 
 Known statuses: `accepted`, `sent`, `delivered`, `send_failed`, `delivery_report_failed`, `completed`, `failed`, `screen_updated`, `input_submitted`, `input_queued`, `cancelled`, `received`, `timeout`.
+
+For every final USSD callback, `result.response` and `result.last_response` contain the last visible carrier response. The app also sends `session_ended: true`, `end_reason` and `carrier_outcome`. A confirmation/accept/decline prompt is classified as `confirmation_required`; explicit failure wording as `carrier_reported_failure`; clear affirmative carrier wording as `carrier_text_indicates_success`; other text is `unclassified`. These labels describe the returned text only and do not guarantee a commercial transaction outcome.
 
 ## 13. Error response
 
@@ -336,7 +343,7 @@ Do not include secrets or sensitive request values in error bodies.
 - The queue enforces uniqueness for both `job_id` and `request_id`. Completed records remain available for duplicate protection for 30 days.
 - If Android or the app restarts while a telephony operation is marked `processing`, the row is marked `failed` and is not replayed automatically. Automatically resending a possibly submitted SMS or repeating a chargeable USSD operation could create duplicate effects. A new request must be submitted after checking the outcome.
 - Daily maintenance runs after 02:00 local device time. It deletes terminal queue records older than 30 days and diagnostic log entries older than 7 days. If the phone was off at 02:00, maintenance runs on the next app or gateway-service start. SQLite primary identifiers are not reset or reused.
-- Incoming SMS forwarding includes message content in the HTTPS result because forwarding is the feature's purpose. Do not configure an untrusted receiver. General local diagnostics do not log SMS bodies, API keys or USSD input values.
+- Ordinary incoming SMS is never forwarded. USSD callbacks are correlated by tracking_id; the receiver must deduplicate event_id.
 
 
 ## 16. Callback outbox retention and receiver requirements

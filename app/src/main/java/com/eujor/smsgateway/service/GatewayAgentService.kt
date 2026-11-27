@@ -30,6 +30,7 @@ class GatewayAgentService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             running = false
+            serviceRunning = false
             worker?.interrupt()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -38,6 +39,7 @@ class GatewayAgentService : Service() {
         createNotificationChannel()
         ResultOutboxWorker.kick(this)
         startForeground(NOTIFICATION_ID, notification())
+        serviceRunning = true
         if (!running) {
             running = true
             worker = Thread({ agentLoop() }, "EujorGatewayAgent").apply { start() }
@@ -47,6 +49,7 @@ class GatewayAgentService : Service() {
 
     override fun onDestroy() {
         running = false
+        serviceRunning = false
         worker?.interrupt()
         super.onDestroy()
     }
@@ -63,7 +66,8 @@ class GatewayAgentService : Service() {
             while (running) {
                 DailyMaintenance.runIfDue(this, queue)
                 val config = SecureConfigStore.load(this)
-                if (config.serverUrl.isBlank() || config.apiKey.isBlank()) {
+                if (config.apiKey.isBlank() ||
+                    (config.serverUrl.isBlank() && (!config.heartbeatEnabled || config.heartbeatUrl.isBlank()))) {
                     if (System.currentTimeMillis() - lastErrorLog > 60_000) {
                         LogStore.append(this, "Agent paused: configure receiver URL and device API key.")
                         lastErrorLog = System.currentTimeMillis()
@@ -73,14 +77,18 @@ class GatewayAgentService : Service() {
                 }
 
                 try {
-                    if (registeredDeviceId != config.deviceId) {
+                    if (config.serverUrl.isNotBlank() && registeredDeviceId != config.deviceId) {
                         GatewayApi.registerDevice(config, this)
                         registeredDeviceId = config.deviceId
-                        lastHeartbeat = System.currentTimeMillis()
                     }
-                    if (System.currentTimeMillis() - lastHeartbeat > 60_000) {
+                    if (config.heartbeatEnabled && config.heartbeatUrl.isNotBlank() &&
+                        System.currentTimeMillis() - lastHeartbeat > 60_000) {
                         GatewayApi.heartbeat(config)
                         lastHeartbeat = System.currentTimeMillis()
+                    }
+                    if (config.serverUrl.isBlank()) {
+                        Thread.sleep(5_000)
+                        continue
                     }
 
                     if (activeJob != null && activeJob.type == "ussd" && !UssdChainState.isActive()) {
@@ -97,8 +105,19 @@ class GatewayAgentService : Service() {
                             if (reason == "timeout") "USSD session timed out." else ""
                         )
                         if (reason == "timeout") {
-                            GatewayApi.postResult(this, config, activeJob.jobId, activeJob.requestId, "ussd", "timeout")
-                            LogStore.append(this, "USSD session timed out; next queued request may proceed.")
+                            val lastResponse = com.eujor.smsgateway.telephony.UssdResultStore.latest
+                            GatewayApi.postResult(
+                                this, config, activeJob.jobId, activeJob.requestId, "ussd", "timeout",
+                                org.json.JSONObject()
+                                    .put("session_id", activeJob.requestId)
+                                    .put("response", lastResponse)
+                                    .put("last_response", lastResponse)
+                                    .put("session_ended", true)
+                                    .put("end_reason", "timeout")
+                                    .put("carrier_outcome", com.eujor.smsgateway.telephony.UssdResultStore.classifyCarrierOutcome(lastResponse))
+                                    .put("tracking_id", UssdChainState.trackingId)
+                            )
+                            LogStore.append(this, "USSD session timed out; final carrier response queued.")
                         }
                         activeJob = null
                     }
@@ -226,6 +245,9 @@ class GatewayAgentService : Service() {
             .build()
 
     companion object {
+        @Volatile private var serviceRunning = false
+        fun isRunning(): Boolean = serviceRunning
+
         const val ACTION_STOP = "com.eujor.smsgateway.action.STOP_AGENT"
         private const val CHANNEL_ID = "eujor_gateway_agent"
         private const val NOTIFICATION_ID = 701

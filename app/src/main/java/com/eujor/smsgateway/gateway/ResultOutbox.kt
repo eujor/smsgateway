@@ -20,6 +20,8 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+data class PendingCallbackSummary(val eventId:String,val jobId:String,val requestId:String,val status:String,val createdAt:Long,val nextAttemptAt:Long,val attempts:Int)
+
 data class PendingResultEvent(
     val eventId: String,
     val config: AppConfig,
@@ -60,7 +62,7 @@ class ResultOutbox(context: Context) :
         require(config.serverUrl.startsWith("https://", true) && config.apiKey.isNotBlank()) {
             "A configured HTTPS receiver and device API key are required."
         }
-        val eventId = java.util.UUID.randomUUID().toString()
+        val eventId = com.eujor.smsgateway.data.UuidV7.generate()
         val body = JSONObject(resultBody.toString()).put("event_id", eventId)
         val securePayload = JSONObject()
             .put("server_url", config.serverUrl.trim().trimEnd('/'))
@@ -82,37 +84,63 @@ class ResultOutbox(context: Context) :
     }
 
     @Synchronized
-    fun nextPending(now: Long = System.currentTimeMillis()): PendingResultEvent? {
+    fun nextPending(now: Long = System.currentTimeMillis(), excluded: Set<String> = emptySet()): PendingResultEvent? {
         writableDatabase.delete(TABLE_RESULTS, "expires_at<=?", arrayOf(now.toString()))
         readableDatabase.query(
             TABLE_RESULTS,
             arrayOf("event_id", "payload_encrypted", "created_at", "expires_at", "next_attempt_at"),
-            null, null, null, null, "created_at ASC, rowid ASC", "1"
+            "next_attempt_at<=? AND expires_at>?", arrayOf(now.toString(), now.toString()),
+            null, null, "created_at ASC, rowid ASC"
         ).use { cursor ->
-            if (!cursor.moveToFirst()) return null
-            val eventId = cursor.getString(0)
-            val payload = try {
-                JSONObject(decrypt(cursor.getString(1)))
-            } catch (e: Exception) {
-                writableDatabase.delete(TABLE_RESULTS, "event_id=?", arrayOf(eventId))
-                LogStore.append(contextForLog, "An unreadable callback record was discarded.")
-                return null
+            while (cursor.moveToNext()) {
+                val eventId = cursor.getString(0)
+                if (eventId in excluded) continue
+                val payload = try {
+                    JSONObject(decrypt(cursor.getString(1)))
+                } catch (_: Exception) {
+                    writableDatabase.delete(TABLE_RESULTS, "event_id=?", arrayOf(eventId))
+                    LogStore.append(contextForLog, "An unreadable callback record was discarded.")
+                    continue
+                }
+                val config = AppConfig(
+                    serverUrl = payload.optString("server_url"),
+                    apiKey = payload.optString("api_key"),
+                    deviceId = payload.optString("device_id"),
+                    deviceName = payload.optString("device_name")
+                )
+                return PendingResultEvent(
+                    eventId = eventId,
+                    config = config,
+                    body = payload.optJSONObject("body") ?: JSONObject(),
+                    createdAt = cursor.getLong(2),
+                    expiresAt = cursor.getLong(3),
+                    nextAttemptAt = cursor.getLong(4)
+                )
             }
-            val config = AppConfig(
-                serverUrl = payload.optString("server_url"),
-                apiKey = payload.optString("api_key"),
-                deviceId = payload.optString("device_id"),
-                deviceName = payload.optString("device_name")
-            )
-            return PendingResultEvent(
-                eventId = eventId,
-                config = config,
-                body = payload.optJSONObject("body") ?: JSONObject(),
-                createdAt = cursor.getLong(2),
-                expiresAt = cursor.getLong(3),
-                nextAttemptAt = cursor.getLong(4)
-            )
         }
+        return null
+    }
+
+    @Synchronized
+    fun pendingFinishedUssd(now: Long = System.currentTimeMillis()): List<PendingCallbackSummary> {
+        writableDatabase.delete(TABLE_RESULTS, "expires_at<=?", arrayOf(now.toString()))
+        val items = mutableListOf<PendingCallbackSummary>()
+        readableDatabase.query(TABLE_RESULTS, arrayOf("event_id","payload_encrypted","created_at","next_attempt_at","attempts"), null,null,null,null,"created_at DESC").use { cursor ->
+            while (cursor.moveToNext()) {
+                val payload = runCatching { JSONObject(decrypt(cursor.getString(1))) }.getOrNull() ?: continue
+                val body = payload.optJSONObject("body") ?: continue
+                if (body.optString("type") != "ussd") continue
+                val status = body.optString("status")
+                if (status !in setOf("completed","failed","cancelled","timeout")) continue
+                items += PendingCallbackSummary(cursor.getString(0), body.optString("job_id"), body.optString("request_id"), status, cursor.getLong(2), cursor.getLong(3), cursor.getInt(4))
+            }
+        }
+        return items
+    }
+
+    @Synchronized
+    fun cancelPending(eventId: String) {
+        writableDatabase.delete(TABLE_RESULTS, "event_id=?", arrayOf(eventId))
     }
 
     @Synchronized
@@ -209,16 +237,20 @@ class ResultOutbox(context: Context) :
 
 object ResultOutboxWorker {
     private val monitor = Object()
+    private val cancelledEventIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     @Volatile private var active = false
     private var kickRequested = false
 
+    fun cancel(context: Context, eventId: String) {
+        cancelledEventIds.add(eventId)
+        ResultOutbox(context).use { it.cancelPending(eventId) }
+        synchronized(monitor) { monitor.notifyAll() }
+    }
+
     fun kick(context: Context) {
         synchronized(monitor) {
-            if (active) {
-                kickRequested = true
-                monitor.notifyAll()
-                return
-            }
+            kickRequested = true
+            if (active) { monitor.notifyAll(); return }
             active = true
             kickRequested = false
             startLocked(context.applicationContext)
@@ -226,15 +258,14 @@ object ResultOutboxWorker {
     }
 
     private fun startLocked(context: Context) {
-        Thread({ runWorker(context) }, "EujorResultOutbox").apply {
-            isDaemon = true
-            start()
-        }
+        Thread({ runWorker(context) }, "EujorResultOutbox").apply { isDaemon = true; start() }
     }
 
     private fun runWorker(context: Context) {
         val outbox = ResultOutbox(context)
         val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(4)
+        val inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         var callback: ConnectivityManager.NetworkCallback? = null
         try {
             callback = object : ConnectivityManager.NetworkCallback() {
@@ -244,40 +275,41 @@ object ResultOutboxWorker {
                         synchronized(monitor) { monitor.notifyAll() }
                     }
                 }
-
                 override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
                     if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                    ) {
+                        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
                         outbox.resetRetryScheduleAfterNetworkRestore()
                         synchronized(monitor) { monitor.notifyAll() }
                     }
                 }
             }
             connectivity.registerDefaultNetworkCallback(callback)
-
             while (true) {
-                if (outbox.pendingCount() == 0) break
-                val event = outbox.nextPending() ?: continue
-                val now = System.currentTimeMillis()
-                if (isValidatedNetwork(connectivity) && event.nextAttemptAt <= now) {
-                    try {
-                        GatewayApi.deliverQueuedResult(event)
-                        outbox.markDelivered(event.eventId)
-                        LogStore.append(context, "Receiver confirmed callback " + event.eventId + " with HTTP 200.")
-                    } catch (e: Exception) {
-                        outbox.recordFailedAttempt(event.eventId)
-                        LogStore.append(context, "Callback " + event.eventId + " was not confirmed; it remains queued for retry.")
+                val networkReady = isValidatedNetwork(connectivity)
+                if (networkReady) {
+                    while (inFlight.size < 4) {
+                        val event = outbox.nextPending(excluded = inFlight) ?: break
+                        if (!inFlight.add(event.eventId)) continue
+                        executor.submit {
+                            try {
+                                if (cancelledEventIds.remove(event.eventId)) return@submit
+                                GatewayApi.deliverQueuedResult(event)
+                                outbox.markDelivered(event.eventId)
+                                LogStore.append(context, "Receiver confirmed callback " + event.eventId + " with HTTP 200.")
+                            } catch (_: Exception) {
+                                outbox.recordFailedAttempt(event.eventId)
+                                LogStore.append(context, "Callback " + event.eventId + " was not confirmed; it remains queued for retry.")
+                            } finally {
+                                inFlight.remove(event.eventId)
+                                cancelledEventIds.remove(event.eventId)
+                                synchronized(monitor) { monitor.notifyAll() }
+                            }
+                        }
                     }
-                    continue
                 }
-
-                val waitMs = if (!isValidatedNetwork(connectivity)) {
-                    10_000L
-                } else {
-                    (event.nextAttemptAt - now).coerceIn(1_000L, 30_000L)
-                }
-                synchronized(monitor) { monitor.wait(waitMs) }
+                val pending = outbox.pendingCount()
+                if (pending == 0 && inFlight.isEmpty()) break
+                synchronized(monitor) { monitor.wait(if (networkReady) 500L else 10_000L) }
             }
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -285,11 +317,14 @@ object ResultOutboxWorker {
             LogStore.append(context, "Callback outbox worker paused: " + (e.message ?: "worker error"))
         } finally {
             if (callback != null) runCatching { connectivity.unregisterNetworkCallback(callback) }
-            val pending = runCatching { outbox.pendingCount() > 0 }.getOrDefault(false)
+            executor.shutdown()
+            runCatching { executor.awaitTermination(15, java.util.concurrent.TimeUnit.SECONDS) }
+            if (!executor.isTerminated) executor.shutdownNow()
+            val pendingAfterWorker = runCatching { outbox.pendingCount() > 0 }.getOrDefault(false)
             outbox.close()
             synchronized(monitor) {
                 active = false
-                val restart = pending || kickRequested
+                val restart = kickRequested || pendingAfterWorker
                 kickRequested = false
                 if (restart) {
                     active = true

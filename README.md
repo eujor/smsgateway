@@ -4,19 +4,165 @@ EUJOR SMS & USSD Gateway is an Android SIM-agent application that connects a pho
 
 The app is backend-agnostic. A receiver can be written in PHP, Go, Python, Node.js, Java, or any language capable of implementing the documented HTTP/JSON API.
 
-## Project status
+## USSD server input, device result and acknowledgement
 
-- App version: **1.0.0**
-- Minimum Android: **Android 8.0 (API 26)**
-- Compile / target SDK: **36**
-- Java: **17**
-- Gradle: **8.13**
-- Repository: [github.com/eujor/smsgateway](https://github.com/eujor/smsgateway)
-- API contract: [docs/API_PROTOCOL.md](docs/API_PROTOCOL.md)
+This section is the quick integration guide for third-party receiver developers. The complete endpoint and protocol contract is in [docs/API_PROTOCOL.md](docs/API_PROTOCOL.md).
 
-GitHub Actions builds the debug APK. The latest successful build is available from the [Actions workflow artifacts](https://github.com/eujor/smsgateway/actions). Download the `eujor-smsgateway-debug` artifact from the successful run. A workflow artifact is a build download, not a published Google Play release.
+### 1. How the server sends a USSD job to the phone
 
-CI verifies that the Android project compiles. Physical-device testing is still required for each phone model, SIM configuration, Android version, carrier and USSD menu. Interactive USSD behaviour differs between manufacturers and operators.
+The device API key is **not a JSON field**. Authenticate the HTTP request with these headers:
+
+```http
+Authorization: Bearer <DEVICE_API_KEY>
+X-Device-ID: <DEVICE_UUID>
+Content-Type: application/json
+Accept: application/json
+```
+
+The server returns a job from the device polling endpoint. Example direct USSD job:
+
+```json
+{
+  "job": {
+    "job_id": "job-ussd-1001",
+    "request_id": "request-ussd-1001",
+    "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+    "type": "ussd",
+    "action": "execute",
+    "sim_slot": 1,
+    "code": "*188#"
+  }
+}
+```
+
+Example with responses for a multi-step USSD menu:
+
+```json
+{
+  "job": {
+    "job_id": "job-ussd-1002",
+    "request_id": "request-ussd-1002",
+    "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+    "type": "ussd",
+    "action": "execute",
+    "sim_slot": 1,
+    "code": "*188#",
+    "inputs": ["1", "2", "254712345678"]
+  }
+}
+```
+
+Field meanings:
+
+- `job_id`: unique ID for this device job.
+- `request_id`: unique ID for the original request from the third-party application.
+- `device_id`: the registered phone UUID; it must match the authenticated device.
+- `type`: `ussd`.
+- `action`: `execute` to start a USSD request.
+- `sim_slot`: 1-based SIM slot number (`1` = SIM 1, `2` = SIM 2).
+- `code`: USSD dial string, supplied as a JSON string, e.g. `"*188#"`.
+- `inputs`: optional array of **strings**. Each string is entered separately when the next editable carrier prompt appears. Examples include menu choices (`"1"`), phone numbers (`"254712345678"`) or other text. Do not combine the sequence into one string. Omit `inputs` for a direct one-response USSD request.
+
+For an interactive menu where the server must inspect each prompt before deciding what to enter, the device reports the screen text and the server sends a continuation job:
+
+```json
+{
+  "job": {
+    "job_id": "job-ussd-1003",
+    "request_id": "request-ussd-1001",
+    "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+    "type": "ussd",
+    "action": "continue",
+    "session_id": "active-ussd-session-id",
+    "input": "2"
+  }
+}
+```
+
+Here, `input` is one string for the current prompt. Use `action: "cancel"` with the active `session_id` to request cancellation.
+
+### 2. What the phone sends to the receiver after USSD execution
+
+The Android app POSTs each result event to:
+
+```http
+POST /api/v1/agent/results
+Authorization: Bearer <DEVICE_API_KEY>
+X-Device-ID: <DEVICE_UUID>
+Content-Type: application/json
+```
+
+A direct USSD completion event looks like this:
+
+```json
+{
+  "protocol_version": "1",
+  "event_id": "7a1d3c8e-9e9c-4b80-a35a-21f03c15b65c",
+  "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+  "job_id": "job-ussd-1001",
+  "request_id": "request-ussd-1001",
+  "type": "ussd",
+  "status": "completed",
+  "result": {
+    "code": "*188#",
+    "response": "Your balance is KES 125.00",
+    "sim_slot": 1
+  },
+  "timestamp": "2026-11-27T18:30:05Z"
+}
+```
+
+For an interactive session, the phone can send several events. For example, a screen/prompt update:
+
+```json
+{
+  "protocol_version": "1",
+  "event_id": "6d0b2c8e-9e9c-4b80-a35a-21f03c15b65c",
+  "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+  "job_id": "job-ussd-1002",
+  "request_id": "request-ussd-1002",
+  "type": "ussd",
+  "status": "screen_updated",
+  "result": {
+    "session_id": "active-ussd-session-id",
+    "response": "1. Check balance\n2. Buy bundle\n3. Exit"
+  },
+  "timestamp": "2026-11-27T18:31:00Z"
+}
+```
+
+Other interactive progress statuses include `input_queued` and `input_submitted`. The final event can be `completed`, `failed`, `cancelled` or `timeout`. The app does not echo submitted input values in its progress callbacks.
+
+**Interpret the returned text, not just the status.** `input_submitted` means Android inserted the input and attempted to submit it; it does not prove the carrier accepted it. `completed` means the USSD dialog closed or the direct request returned; it does not prove that a purchase, transfer or other carrier-side transaction succeeded. The receiver must inspect `result.response` and apply carrier-specific success/failure rules.
+
+### 3. Confirmation the app requires from the receiver
+
+The receiver must validate the event, **durably save it** (including its `event_id`) and only then return:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+```
+
+```json
+{
+  "success": true,
+  "event_id": "7a1d3c8e-9e9c-4b80-a35a-21f03c15b65c"
+}
+```
+
+The `event_id` in the acknowledgement must exactly match the event received. This is the app's confirmation that the receiver accepted and recorded that callback. HTTP 200 without the matching JSON body is not sufficient.
+
+The app keeps an unconfirmed event in its separate encrypted callback outbox and retries it:
+
+- Up to **6 attempts per retry batch**, with **10 seconds between attempts**.
+- After six unsuccessful attempts, it pauses for **5 minutes** before another retry batch.
+- It continues retrying while the event remains within its **12-hour retention lifetime**; after that it expires and is dropped.
+- Restored validated network connectivity can trigger an immediate retry.
+
+The same event is resent with the same `event_id`. Delivery is at-least-once, so the receiver must enforce a unique constraint/idempotency check on `event_id`. If an event was already stored, acknowledge the duplicate with the same HTTP 200 JSON response without processing it twice. Keep deduplication records for at least 24 hours.
+
+The acknowledgement confirms **server receipt and durable logging only**. It does not confirm carrier-side USSD success. See [the full API protocol](docs/API_PROTOCOL.md#12-device-result-callback-and-delivery-acknowledgement).
 
 ## Features
 
@@ -38,14 +184,10 @@ CI verifies that the Android project compiles. Physical-device testing is still 
 
 A carrier may not provide SMS delivery reports. **Sent does not mean delivered.**
 
-### 2. Incoming SMS forwarding
+### 2. Incoming SMS handling
 
-- Listen for incoming SMS when the user grants the Android `RECEIVE_SMS` permission.
-- Forward the sender number, message body and received timestamp to the configured HTTPS receiver.
-- Use the same durable result-callback delivery mechanism as other app events.
-- Avoid writing SMS message bodies or OTPs to general diagnostic logs.
-
-Only configure a receiver server you control or trust. Incoming SMS can contain private information, verification codes and banking alerts.
+- Ordinary incoming SMS is not read, forwarded or reported to the receiver.
+- The receiver receives only results for explicit app-initiated or server-triggered gateway operations.
 
 ### 3. Direct USSD
 
@@ -78,7 +220,7 @@ USSD progress statuses include:
 
 The app does not echo the submitted input values in these progress events. The server already knows which values it supplied.
 
-**USSD outcome caution:** `input_submitted` does not prove the carrier accepted the input. `completed` means the dialog closed; it does not prove a purchase, balance change, transfer or other business transaction succeeded. The receiver must interpret the carrier's returned screen text. Operators may use different wording and languages. Some phone/carrier dialogs expose buttons rather than editable text fields and may not be automatable.
+**USSD outcome caution:** `input_submitted` does not prove the carrier accepted the input. `completed` means the dialog closed; it does not prove a purchase, balance change, transfer or other business transaction succeeded. The final event includes `result.response` and `result.last_response` (the last visible carrier text), `session_ended`, `end_reason` and `carrier_outcome`. A response asking to “Confirm purchase” or offering Accept/Decline is marked `confirmation_required`, not success. The receiver must interpret the carrier's returned screen text. Operators may use different wording and languages. Some phone/carrier dialogs expose buttons rather than editable text fields and may not be automatable.
 
 ### 5. Receiver server connection
 
@@ -89,7 +231,7 @@ The app does not echo the submitted input values in these progress events. The s
 - Generate a random 256-bit device API key in the app.
 - Reveal, hide and copy the key; generate a replacement to rotate it.
 - Register the device with the receiver and check that the receiver approves it.
-- Send device heartbeat approximately every 60 seconds.
+- Optional heartbeat with its own enable/disable switch and complete HTTPS endpoint URL; POST goes only to that exact URL, independently of the receiver server URL.
 - Test the receiver's health endpoint.
 - Long-poll for remote jobs.
 - Receive either one job or a batch of up to 20 jobs.
@@ -129,7 +271,7 @@ The app deliberately does not automatically repeat an operation that may already
 
 ### 8. Durable result-callback outbox
 
-Every outgoing result event is stored in a **separate encrypted SQLite outbox before transmission**. This covers SMS status events, incoming SMS forwarding and USSD progress/final events.
+Every outgoing result event is stored in a **separate encrypted SQLite outbox before transmission**. This covers explicit SMS job status events and USSD progress/final events.
 
 Each event includes a unique UUID `event_id`. The app sends events sequentially and requires this exact acknowledgement before deleting an event:
 
@@ -193,7 +335,6 @@ The result outbox uses a separate database and UUID event identifiers. The daily
 - Android 8.0 (API 26) or newer.
 - Active SIM with SMS/USSD service for the relevant operation.
 - `SEND_SMS` — sending SMS.
-- `RECEIVE_SMS` — forwarding incoming SMS.
 - `CALL_PHONE` — launching interactive USSD.
 - `READ_PHONE_STATE` — SIM/subscription selection.
 - Notifications — foreground service notification (Android 13+ runtime permission).
@@ -205,13 +346,7 @@ The app explains why SMS and Accessibility capabilities are used. It does not hi
 
 ## Installation
 
-1. Open the [GitHub Actions page](https://github.com/eujor/smsgateway/actions).
-2. Open the latest successful **Android build** run.
-3. Download the `eujor-smsgateway-debug` artifact and extract the APK.
-4. Open the APK on the Android phone and follow the package installer.
-5. Grant only the permissions required for the features you intend to use.
-6. Enable the USSD Accessibility Service only if interactive/chained USSD is required.
-7. Configure the receiver URL and device API key in Settings.
+Download the current APK from the [EUJOR SMS & USSD Gateway releases](https://github.com/eujor/smsgateway/releases/latest). Install it on the Android phone, grant the permissions required for the features you use, enable the USSD Session Assistant for interactive/chained USSD, then configure the receiver URL and device API key in Settings.
 
 Android may ask you to allow the browser or file manager used to open the APK to **Install unknown apps**. This is a separate Android setting from Google Play Protect. Allow the source app only when needed, and turn that permission off again after installing if you do not need it.
 
@@ -233,29 +368,6 @@ This disables Play Protect app scanning more broadly; it is not an exception lim
 
 Official instructions: [Google — Use Play Protect to help keep your apps safe and your data private](https://support.google.com/android/answer/2812853).
 
-## Build from source
-
-Requirements:
-
-- JDK 17
-- Android SDK Platform 36
-- Android Build Tools 36.0.0
-- Gradle 8.13
-
-Open the repository root in Android Studio and sync Gradle. Or run:
-
-```bash
-gradle --no-daemon assembleDebug
-```
-
-The debug APK is generated at:
-
-```
-app/build/outputs/apk/debug/app-debug.apk
-```
-
-GitHub Actions also builds the debug APK and uploads it as the `eujor-smsgateway-debug` workflow artifact. Published builds, when available, will appear under [GitHub Releases](https://github.com/eujor/smsgateway/releases).
-
 ## Receiver server integration
 
 Implement the language-neutral contract in [docs/API_PROTOCOL.md](docs/API_PROTOCOL.md).
@@ -264,7 +376,7 @@ The Android app expects the receiver to provide:
 
 - Device registration/approval: `POST /api/v1/agent/devices/register`.
 - Health check: `GET /api/v1/agent/health`.
-- Heartbeat: `POST /api/v1/agent/devices/heartbeat`.
+- Optional heartbeat: a complete HTTPS URL configured separately in Settings; when enabled, the app POSTs to that exact URL without appending a path or using the receiver URL.
 - Job polling: `GET /api/v1/agent/jobs/next`.
 - Result ingestion: `POST /api/v1/agent/results`.
 
@@ -290,14 +402,13 @@ Keep requesting-application API keys separate from Android device API keys. Do n
 - Incoming jobs and outgoing callback events are encrypted at rest in separate SQLite databases.
 - Device identity uses an app-generated UUID, not IMEI/IMSI.
 - General diagnostic logs avoid API keys, SMS message bodies and USSD input values.
-- Incoming SMS content is transmitted to the receiver because forwarding is the feature's purpose. Configure only a trusted HTTPS receiver.
+- Ordinary incoming SMS is never forwarded or transmitted.
 - SMS/USSD input values may contain private or financial data. Do not store PINs or secrets in preloaded input chains unless the security implications are understood.
 
 ## Documentation
 
 - [API protocol v1](docs/API_PROTOCOL.md)
 - [GitHub repository](https://github.com/eujor/smsgateway)
-- [GitHub Actions builds](https://github.com/eujor/smsgateway/actions)
 - [GitHub Releases](https://github.com/eujor/smsgateway/releases)
 
 See [AGENTS.md](AGENTS.md) for development workflow instructions.

@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">EUJOR SMS Gateway</string>
+    <string name="app_name">EUJOR SMS &amp; USSD Gateway v2</string>
     <string name="ussd_accessibility_label">EUJOR USSD Session Assistant</string>
     <string name="ussd_accessibility_description">Interacts with the visible USSD dialog during an active session to enter chained menu responses one at a time.</string>
 </resources>
