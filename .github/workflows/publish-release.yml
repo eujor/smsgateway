@@ -201,22 +201,28 @@ jobs:
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
               owner, repo, release_id: release.id
             });
-            if (assets.some(asset => asset.name === assetName)) {
-              core.info(`Release asset ${assetName} already exists; leaving it unchanged.`);
-            } else {
-              const data = fs.readFileSync(`release-assets/${assetName}`);
-              await github.rest.repos.uploadReleaseAsset({
+            const existingAsset = assets.find(asset => asset.name === assetName);
+            if (existingAsset) {
+              await github.rest.repos.deleteReleaseAsset({
                 owner,
                 repo,
-                release_id: release.id,
-                name: assetName,
-                data,
-                headers: {
-                  'content-type': 'application/vnd.android.package-archive',
-                  'content-length': data.length
-                }
+                asset_id: existingAsset.id
               });
+              core.info(`Deleted previous release asset ${assetName}; replacing it with the APK from this successful build.`);
             }
+
+            const data = fs.readFileSync(`release-assets/${assetName}`);
+            await github.rest.repos.uploadReleaseAsset({
+              owner,
+              repo,
+              release_id: release.id,
+              name: assetName,
+              data,
+              headers: {
+                'content-type': 'application/vnd.android.package-archive',
+                'content-length': data.length
+              }
+            });
 
             if (tagName === 'v2.0.0') {
               const v1RootSha = '9642ce821b0332b4b4d821f988f36747c8d33848';
