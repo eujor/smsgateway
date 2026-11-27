@@ -4,19 +4,117 @@ EUJOR SMS & USSD Gateway is an Android SIM-agent application that connects a pho
 
 The app is backend-agnostic. A receiver can be written in PHP, Go, Python, Node.js, Java, or any language capable of implementing the documented HTTP/JSON API.
 
-## Project status
+## Server-to-device USSD input and device callback
 
-- App version: **1.0.0**
-- Minimum Android: **Android 8.0 (API 26)**
-- Compile / target SDK: **36**
-- Java: **17**
-- Gradle: **8.13**
-- Repository: [github.com/eujor/smsgateway](https://github.com/eujor/smsgateway)
-- API contract: [docs/API_PROTOCOL.md](docs/API_PROTOCOL.md)
+The receiver server polls for jobs using the device's registered credentials. The API key is **not placed in the job JSON**: Android sends it as an HTTP bearer token, together with the device UUID.
 
-GitHub Actions builds the debug APK. The latest successful build is available from the [Actions workflow artifacts](https://github.com/eujor/smsgateway/actions). Download the `eujor-smsgateway-debug` artifact from the successful run. A workflow artifact is a build download, not a published Google Play release.
+**Authenticated device request headers:**
 
-CI verifies that the Android project compiles. Physical-device testing is still required for each phone model, SIM configuration, Android version, carrier and USSD menu. Interactive USSD behaviour differs between manufacturers and operators.
+```http
+Authorization: Bearer <DEVICE_API_KEY>
+X-Device-ID: <DEVICE_UUID>
+Accept: application/json
+```
+
+Example interactive USSD job returned by the server:
+
+```json
+{
+  "job": {
+    "job_id": "job-ussd-1001",
+    "request_id": "request-ussd-1001",
+    "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+    "type": "ussd",
+    "action": "execute",
+    "sim_slot": 1,
+    "code": "*188#",
+    "inputs": ["1", "2", "254712345678"]
+  }
+}
+```
+
+- job_id and request_id: unique identifiers supplied by the server.
+- device_id: UUID of the registered phone; it must match the authenticated device.
+- type/action: ussd/execute.
+- sim_slot: 1-based SIM slot; 1 selects SIM 1, 2 selects SIM 2. It must refer to an active SIM.
+- code: USSD string exactly as dialled, for example *188#.
+- inputs: optional array of strings. Each string is entered separately when the next editable carrier prompt appears. Values can be menu choices, phone numbers or other text expected by that prompt. Do not combine the values into one string. Omit inputs for a direct one-response USSD request.
+
+For an unpredictable menu, the server can send a continuation job after reading a prompt:
+
+```json
+{
+  "job": {
+    "job_id": "job-ussd-1002",
+    "request_id": "request-ussd-1002",
+    "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+    "type": "ussd",
+    "action": "continue",
+    "session_id": "active-ussd-session-id",
+    "input": "2"
+  }
+}
+```
+
+Here, input is one string for the current prompt. The server may send further continuation jobs as later prompts arrive. A session can also be cancelled with type=ussd, action=cancel and its session_id.
+
+### What the Android device sends back
+
+Each result is POSTed to /api/v1/agent/results and includes a unique event_id, device/job/request IDs, operation type, status, result data and timestamp.
+
+Example prompt update from an interactive USSD session:
+
+```json
+{
+  "protocol_version": "1",
+  "event_id": "6d0b2c8e-9e9c-4b80-a35a-21f03c15b65c",
+  "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+  "job_id": "job-ussd-1001",
+  "request_id": "request-ussd-1001",
+  "type": "ussd",
+  "status": "screen_updated",
+  "result": {
+    "session_id": "active-ussd-session-id",
+    "response": "1. Check balance\n2. Buy bundle\n3. Exit"
+  },
+  "timestamp": "2026-11-27T18:30:00Z"
+}
+```
+
+After a direct USSD request returns, the device sends a final event similar to:
+
+```json
+{
+  "protocol_version": "1",
+  "event_id": "7a1d3c8e-9e9c-4b80-a35a-21f03c15b65c",
+  "device_id": "9d6c8e7a-3b42-4f31-a2c9-8b7f12345678",
+  "job_id": "job-ussd-1001",
+  "request_id": "request-ussd-1001",
+  "type": "ussd",
+  "status": "completed",
+  "result": {
+    "code": "*188#",
+    "response": "Your balance is KES 125.00",
+    "sim_slot": 1
+  },
+  "timestamp": "2026-11-27T18:30:05Z"
+}
+```
+
+For an interactive session, the device can send multiple screen_updated events, input_submitted progress events, and a final completed or failure event. The response field contains the visible USSD text; sim_slot identifies the selected SIM where included. Android failure events may include a failure_code. The device does not echo submitted input values in progress callbacks.
+
+**Important:** input_submitted means Android inserted the string and attempted to submit it; it does not prove the carrier accepted it. completed means the USSD dialog closed or the direct request returned; it does not prove that a purchase, transfer or other carrier-side transaction succeeded. The server must inspect and interpret the returned response text.
+
+The receiver must durably store each event before acknowledging it with **HTTP 200** and JSON:
+
+```json
+{
+  "success": true,
+  "event_id": "the-same-event-id-from-the-request"
+}
+```
+
+The acknowledgement must echo the exact event_id. The app retries unacknowledged events, so the server must deduplicate by event_id and safely acknowledge duplicates. See the complete API protocol at docs/API_PROTOCOL.md for registration, polling, job fields, result statuses, retries and all other request types.
 
 ## Features
 

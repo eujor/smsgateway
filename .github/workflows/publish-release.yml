@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/publish-release.yml"
+      - "README.md"
   workflow_dispatch:
     inputs:
       tag_name:
@@ -84,18 +85,40 @@ jobs:
               throw new Error('The selected target SHA could not be verified.');
             }
 
-            const releaseTitle = `EUJOR SMS & USSD Gateway ${tagName}`;
+            const releaseTitle = 'EUJOR SMS & USSD Gateway ' + tagName;
+            const releaseBody = [
+              '# ' + releaseTitle,
+              '',
+              'Final v1.0 documentation and release information for the EUJOR Android SMS & USSD Gateway.',
+              '',
+              '## Server-to-device USSD input',
+              'The device authenticates with Authorization: Bearer DEVICE_API_KEY and X-Device-ID: DEVICE_UUID. The job JSON carries job_id, request_id, device_id, type=ussd, action=execute, a 1-based sim_slot, a USSD code such as *188#, and optional inputs as an array of separate strings.',
+              '',
+              '## Device result callback',
+              'The Android agent posts each event to /api/v1/agent/results. The callback includes a unique event_id, device/job/request IDs, type, status, result and timestamp. USSD results include the visible carrier text in result.response; interactive sessions can report screen_updated and input_submitted events before a final completed or failure status.',
+              '',
+              'input_submitted does not prove carrier acceptance, and completed does not prove a commercial transaction succeeded. The receiver must interpret the returned USSD text.',
+              '',
+              'The receiver must durably store callbacks and respond with HTTP 200 JSON containing success=true and the exact same event_id. Deduplicate retries by event_id.',
+              '',
+              '## APK',
+              'The attached APK is the debug build produced by GitHub Actions for the v1.0.0 application source. It is intended for testing and is not a Play Store-signed production release.',
+              '',
+              'See [README](https://github.com/' + owner + '/' + repo + '/blob/' + targetSha + '/README.md) and [API protocol](https://github.com/' + owner + '/' + repo + '/blob/' + targetSha + '/docs/API_PROTOCOL.md).',
+              '',
+              'Physical-device validation remains necessary for SIM selection and carrier/OEM-specific USSD behaviour.'
+            ].join('\n');
             let release;
 
             try {
-              const existingRef = await github.rest.git.getRef({ owner, repo, ref: `tags/${tagName}` });
+              const existingRef = await github.rest.git.getRef({ owner, repo, ref: 'tags/' + tagName });
               let existingCommitSha = existingRef.data.object.sha;
               if (existingRef.data.object.type === 'tag') {
                 const annotated = await github.rest.git.getTag({ owner, repo, tag_sha: existingCommitSha });
                 existingCommitSha = annotated.data.object.sha;
               }
               if (existingCommitSha !== targetSha) {
-                throw new Error(`Tag ${tagName} already points to a different commit; refusing to move it.`);
+                throw new Error('Tag ' + tagName + ' already points to a different commit; refusing to move it.');
               }
             } catch (error) {
               if (error.status !== 404) throw error;
@@ -103,7 +126,7 @@ jobs:
                 owner,
                 repo,
                 tag: tagName,
-                message: `EUJOR SMS & USSD Gateway ${tagName}`,
+                message: 'EUJOR SMS & USSD Gateway ' + tagName,
                 object: targetSha,
                 type: 'commit',
                 tagger: {
@@ -115,7 +138,7 @@ jobs:
               await github.rest.git.createRef({
                 owner,
                 repo,
-                ref: `refs/tags/${tagName}`,
+                ref: 'refs/tags/' + tagName,
                 sha: annotatedTag.data.sha
               });
             }
@@ -123,6 +146,10 @@ jobs:
             try {
               const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag: tagName });
               release = existing.data;
+              const updated = await github.rest.repos.updateRelease({
+                owner, repo, release_id: release.id, name: releaseTitle, body: releaseBody
+              });
+              release = updated.data;
             } catch (error) {
               if (error.status !== 404) throw error;
               const created = await github.rest.repos.createRelease({
@@ -134,31 +161,10 @@ jobs:
                 draft: false,
                 prerelease: false,
                 generate_release_notes: false,
-                body: [
-                  `# ${releaseTitle}`,
-                  '',
-                  'First versioned release of the EUJOR Android SMS & USSD Gateway.',
-                  '',
-                  '## Included',
-                  '- SIM-based SMS sending and incoming SMS forwarding.',
-                  '- Direct and interactive/chained USSD with live prompt reporting.',
-                  '- HTTPS receiver integration, device registration and heartbeat.',
-                  '- Encrypted local job queue and sequential telephony execution.',
-                  '- Encrypted callback outbox with HTTP 200 acknowledgement, event-ID deduplication support, retry and 12-hour retention.',
-                  '- Manual JSON tools, setup/permission screens, device key management and diagnostics.',
-                  '',
-                  '## APK',
-                  'The attached APK is the debug build produced by the successful GitHub Actions run for the application source. It is intended for testing and is not a Play Store-signed production release.',
-                  '',
-                  '## Documentation',
-                  'See [README](https://github.com/' + owner + '/' + repo + '/blob/' + targetSha + '/README.md) and [API protocol](https://github.com/' + owner + '/' + repo + '/blob/' + targetSha + '/docs/API_PROTOCOL.md).',
-                  '',
-                  'Physical-device validation remains necessary for SMS, SIM selection and carrier/OEM-specific interactive USSD behaviour.'
-                ].join('\\n')
+                body: releaseBody
               });
               release = created.data;
             }
-
             const assetName = `EUJOR-SMS-USSD-Gateway-${tagName}.apk`;
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
               owner, repo, release_id: release.id
