@@ -134,7 +134,7 @@ fun GatewayApp() {
                     request.type == "ussd" && request.action == "cancel" -> {
                         UssdChainState.finish("cancelled")
                         UssdResultStore.finish("USSD session cancelled.")
-                        GatewayApi.postResult(config, request.jobId, request.requestId, "ussd", "cancelled", JSONObject())
+                        GatewayApi.postResult(context, config, request.jobId, request.requestId, "ussd", "cancelled", JSONObject())
                     }
                     request.type == "ussd" && request.inputs.isNotEmpty() -> {
                         check(!UssdChainState.isActive()) { "Another USSD session is already active. Finish it before starting another." }

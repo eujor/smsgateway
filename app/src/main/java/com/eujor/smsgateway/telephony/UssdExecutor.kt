@@ -37,7 +37,7 @@ object UssdExecutor {
                 UssdChainState.finish("failed")
                 LogStore.append(context, "USSD request failed (Android code " + failureCode + ").")
                 runCatching {
-                    GatewayApi.postResult(config, jobId, requestId, "ussd", "failed",
+                    GatewayApi.postResult(context, config, jobId, requestId, "ussd", "failed",
                         JSONObject().put("failure_code", failureCode))
                 }
             }
