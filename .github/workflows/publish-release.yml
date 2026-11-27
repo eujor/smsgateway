@@ -75,7 +75,7 @@ jobs:
             const targetSha = process.env.TARGET_SHA;
             const { owner, repo } = context.repo;
 
-            if (!/^v\\d+\\.\\d+\\.\\d+$/.test(tagName)) {
+            if (!/^v[0-9]+\\.[0-9]+\\.[0-9]+$/.test(tagName)) {
               throw new Error('Release tag must use semantic version format, e.g. v1.0.1.');
             }
 
