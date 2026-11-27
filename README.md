@@ -56,7 +56,7 @@ Field meanings:
 
 - `job_id`: unique ID for this device job.
 - `request_id`: unique ID for the original request from the third-party application.
-- `device_id`: the registered phone UUID; it must match the authenticated device.
+- `device_id`: the app-generated phone UUID; it must match the authenticated device.
 - `type`: `ussd`.
 - `action`: `execute` to start a USSD request.
 - `sim_slot`: 1-based SIM slot number (`1` = SIM 1, `2` = SIM 2).
@@ -230,14 +230,13 @@ The app does not echo the submitted input values in these progress events. The s
 - Configurable device name.
 - Generate a random 256-bit device API key in the app.
 - Reveal, hide and copy the key; generate a replacement to rotate it.
-- Register the device with the receiver and check that the receiver approves it.
 - Optional heartbeat with its own enable/disable switch and complete HTTPS endpoint URL; POST goes only to that exact URL, independently of the receiver server URL.
 - Test the receiver server's health endpoint (the app sends a GET request to the receiver; this does not check the Android app's reachability).
 - Long-poll for remote jobs.
 - Receive either one job or a batch of up to 20 jobs.
 - Attempt reconnection when receiver/network requests fail while the gateway service is running.
 
-The receiver must register or otherwise recognise the same device API key entered in the app. Generating a key in the app does not automatically register it on the server.
+The receiver must be preconfigured to accept the exact device API key entered in the app and bind it to the app-generated device UUID. The app does not send a registration request; configure the key and device identity on the receiver separately.
 
 ### 6. Manual JSON tester and quick tools
 
@@ -375,13 +374,12 @@ Implement the language-neutral contract in [docs/API_PROTOCOL.md](docs/API_PROTO
 
 The Android app expects the receiver to provide:
 
-- Device registration/approval: `POST /api/v1/agent/devices/register`.
 - Receiver health check: `GET /api/v1/agent/health` is hosted by your receiver server. The Android app calls it when you use Test Connection; it checks the receiver server, not the phone/app. The app does not expose an inbound HTTP health endpoint.
 - Optional heartbeat: a complete HTTPS URL configured separately in Settings; when enabled, the app POSTs to that exact URL without appending a path or using the receiver URL.
 - Job polling: `GET /api/v1/agent/jobs/next`.
 - Result ingestion: `POST /api/v1/agent/results`.
 
-The receiver must authenticate the device bearer key, bind it to the registered device UUID, validate job ownership and input fields, and record result events. For result ingestion, return HTTP 200 with `{"success":true,"event_id":"<matching event_id>"}` only after the event is durably recorded. Enforce a unique constraint/idempotency rule on `event_id`; keep deduplication records longer than the app's 12-hour retry lifetime (24 hours or longer is recommended).
+The receiver must authenticate the device bearer key, bind it to the configured device UUID, validate job ownership and input fields, and record result events. For result ingestion, return HTTP 200 with `{"success":true,"event_id":"<matching event_id>"}` only after the event is durably recorded. Enforce a unique constraint/idempotency rule on `event_id`; keep deduplication records longer than the app's 12-hour retry lifetime (24 hours or longer is recommended).
 
 Keep requesting-application API keys separate from Android device API keys. Do not accept arbitrary callback URLs from untrusted request bodies. Apply authorisation, rate limits, input validation and audit logging on the receiver.
 
