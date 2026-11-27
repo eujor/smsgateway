@@ -59,8 +59,6 @@ class GatewayAgentService : Service() {
         queue.recoverInterrupted()
         var activeJob: QueuedGatewayJob? = null
         var lastHeartbeat = 0L
-        var registeredDeviceId = ""
-        var nextRegistrationAttemptAt = 0L
         var lastErrorLog = 0L
 
         try {
@@ -78,21 +76,6 @@ class GatewayAgentService : Service() {
                 }
 
                 try {
-                    if (config.serverUrl.isNotBlank() && registeredDeviceId != config.deviceId &&
-                        System.currentTimeMillis() >= nextRegistrationAttemptAt) {
-                        try {
-                            GatewayApi.registerDevice(config, this)
-                            registeredDeviceId = config.deviceId
-                            nextRegistrationAttemptAt = 0L
-                        } catch (registrationError: Exception) {
-                            // Registration is not heartbeat. Do not hammer the receiver URL
-                            // every four seconds when the receiver rejects or cannot approve it.
-                            nextRegistrationAttemptAt = System.currentTimeMillis() + 60_000L
-                            LogStore.append(this, "Device registration failed; retrying in 60 seconds: " +
-                                (registrationError.message ?: "receiver error"))
-                            throw registrationError
-                        }
-                    }
                     if (config.heartbeatEnabled && config.heartbeatUrl.isNotBlank() &&
                         System.currentTimeMillis() - lastHeartbeat > 60_000) {
                         GatewayApi.heartbeat(config)
@@ -182,7 +165,6 @@ class GatewayAgentService : Service() {
                 } catch (e: InterruptedException) {
                     Thread.currentThread().interrupt()
                 } catch (e: Exception) {
-                    if (registeredDeviceId.isNotBlank()) registeredDeviceId = ""
                     if (System.currentTimeMillis() - lastErrorLog > 30_000) {
                         LogStore.append(this, "Gateway connection problem: " + (e.message ?: "network error"))
                         lastErrorLog = System.currentTimeMillis()
