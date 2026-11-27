@@ -20,14 +20,15 @@ object GatewayJobProcessor {
         val jobId = job.optString("job_id")
         val requestId = job.optString("request_id")
         val type = job.optString("type").lowercase()
-        val action = job.optString("action")
-            .ifBlank { if (type == "sms") "send" else "execute" }
-            .lowercase()
+        // Remote jobs must state their action explicitly. Never infer "execute"
+        // for a USSD job: a malformed/incomplete server payload must fail closed.
+        val action = job.optString("action").trim().lowercase()
         val simSlot = job.optInt("sim_slot", 1)
 
         try {
             require(jobId.isNotBlank()) { "Remote job is missing job_id." }
             require(requestId.isNotBlank()) { "Remote job is missing request_id." }
+            require(action.isNotBlank()) { "Remote job is missing an explicit action; no operation was executed." }
             require(job.optString("device_id") == config.deviceId) { "Remote job device_id does not match this device." }
             require(simSlot in 1..4) { "Remote job sim_slot must be between 1 and 4." }
             val expiresAt = job.optString("expires_at")
