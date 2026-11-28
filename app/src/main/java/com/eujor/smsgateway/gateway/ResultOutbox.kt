@@ -296,7 +296,13 @@ object ResultOutboxWorker {
                                 if (cancelledEventIds.remove(event.eventId)) return@submit
                                 GatewayApi.deliverQueuedResult(event)
                                 outbox.markDelivered(event.eventId)
-                                LogStore.append(context, "Receiver confirmed callback " + event.eventId + " with HTTP 200.")
+                                LogStore.append(
+                                    context,
+                                    "Receiver confirmed callback: type=" + event.body.optString("type", "unknown") +
+                                        " status=" + event.body.optString("status", "unknown") +
+                                        " job_id=" + event.body.optString("job_id") +
+                                        " event_id=" + event.eventId + " HTTP=200."
+                                )
                             } catch (_: Exception) {
                                 outbox.recordFailedAttempt(event.eventId)
                                 LogStore.append(context, "Callback " + event.eventId + " was not confirmed; it remains queued for retry.")
