@@ -652,10 +652,21 @@ private fun ToolsScreen(
 @Composable
 private fun LogsScreen(logs: List<String>, onRefresh: () -> Unit, onClear: () -> Unit) {
     var confirmClear by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
             Text("Activity logs", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Row {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = {
+                        if (logs.isNotEmpty()) {
+                            clipboard.setPrimaryClip(ClipData.newPlainText("EUJOR Activity Log", logs.joinToString("\n")))
+                            Toast.makeText(context, "Activity log copied.", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = logs.isNotEmpty()
+                ) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy activity log") }
                 IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
                 TextButton(onClick = { confirmClear = true }) { Text("Clear logs") }
             }
