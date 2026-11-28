@@ -144,7 +144,7 @@ Example callback:
     "recipient": "254712345678",
     "sim_slot": 1
   },
-  "timestamp": "2026-11-27T14:03:00Z"
+  "timestamp": "2026-11-27T17:03:00+03:00"
 }
 ```
 
@@ -332,7 +332,7 @@ Do not include secrets or sensitive request values in error bodies.
 - Only one telephony operation is dispatched at a time. SMS holds the execution slot until Android reports `sent` or `send_failed`, with a 120-second fallback timeout if no send result arrives; a later delivery report does not hold the queue. An active USSD session holds the execution slot until its dialog closes, the user cancels, or its 120-second session timeout expires. Only `continue` and `cancel` jobs for that same session can run while the session is active. Manual USSD and SMS operations in the app use the same in-process slot guard while the gateway service is running.
 - The queue enforces uniqueness for both `job_id` and `request_id`. Completed records remain available for duplicate protection for 30 days.
 - If Android or the app restarts while a telephony operation is marked `processing`, the row is marked `failed` and is not replayed automatically. Automatically resending a possibly submitted SMS or repeating a chargeable USSD operation could create duplicate effects. A new request must be submitted after checking the outcome.
-- Daily maintenance runs after 02:00 local device time. It deletes terminal queue records older than 30 days and diagnostic log entries older than 7 days. If the phone was off at 02:00, maintenance runs on the next app or gateway-service start. Local diagnostic log timestamps use the phone's regional timezone and include the UTC offset; if the phone timezone is UTC/GMT but the SIM/network country has exactly one timezone, that regional timezone is used. Countries with multiple timezones retain the phone's configured timezone. API event timestamps remain ISO 8601 UTC. SQLite primary identifiers are not reset or reused.
+- Daily maintenance runs after 02:00 local device time. It deletes terminal queue records older than 30 days and diagnostic log entries older than 7 days. If the phone was off at 02:00, maintenance runs on the next app or gateway-service start. Local diagnostic log timestamps use the phone's regional timezone and include the UTC offset; if the phone timezone is UTC/GMT but the SIM/network country has exactly one timezone, that regional timezone is used. Countries with multiple timezones retain the phone's configured timezone. API callback and heartbeat timestamps use ISO 8601 with the phone's detected regional UTC offset; for example, East Africa Time is represented with +03:00. SQLite primary identifiers are not reset or reused.
 - Ordinary incoming SMS is never forwarded. USSD callbacks are correlated by tracking_id; the receiver must deduplicate event_id.
 
 
