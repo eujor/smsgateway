@@ -815,29 +815,111 @@ private fun ApiEndpointCard(title: String, method: String, url: String, detail: 
 
 @Composable
 private fun RequirementsScreen() {
-
     val context = androidx.compose.ui.platform.LocalContext.current
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("App & server guide", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        RequirementCard("Two separate components", "ANDROID APP: runs on the phone, uses its SIM to send SMS or execute USSD, polls the receiver server for jobs, and posts result callbacks. RECEIVER / SMS SERVER: runs on your hosting server, exposes the routes shown on the API map, authenticates the phone, queues jobs, and stores callbacks. The Android app does not host inbound HTTP endpoints.")
-        RequirementCard("Application", "Version ${BuildConfig.VERSION_NAME} (version code ${BuildConfig.VERSION_CODE})\nMinimum Android: Android 8.0 Oreo (API 26)\nCompile SDK: 36\nTarget SDK: 36\nDevice identity: app-generated UUID; IMEI/IMSI not required.")
-        RequirementCard("Permissions", "SMS send: SEND_SMS\nUSSD / call chain: CALL_PHONE\nSIM selection: READ_PHONE_STATE\nBackground agent: foreground service and notifications\nMulti-step USSD: enable EUJOR USSD Session Assistant in Android Accessibility settings.")
-        RequirementCard("Receiver server → Android app", "The receiver server returns queued SMS or USSD jobs in response to the Android app's GET /api/v1/agent/jobs/next long-poll. It returns a job immediately when one is available, or HTTP 204 when the poll times out without a job. USSD inputs are strings entered one prompt at a time.")
-        RequirementCard("Android app → receiver server", "The app calls GET /api/v1/agent/health only when Test receiver server is tapped on Home; it continuously polls GET /api/v1/agent/jobs/next with wait_seconds=3 while connected; and it POSTs result events to /api/v1/agent/results. See the API map page for full URLs based on the configured base URL.")
-        RequirementCard("Result acknowledgement from receiver server", "Every callback has a unique event_id. The receiver MUST return HTTP 200 with JSON {success:true,event_id:<same event_id>} to confirm receipt. HTTP 202, other status codes, missing JSON or mismatched event_id are not accepted. The encrypted outbox retries up to 6 times, 10 seconds apart, then waits 5 minutes before another batch; restored connectivity triggers an immediate retry. Events expire after 12 hours. Pending callbacks are separate from 02:00 log/job maintenance and are not truncated by it. Receiver must deduplicate event_id.")
-        RequirementCard("USSD modes", "Direct mode uses TelephonyManager.sendUssdRequest() for a single request and response. Chained mode opens the visible carrier USSD dialog and enters each queued response with a 2-second minimum interval. Every server-triggered USSD callback carries its tracking_id. OEM and carrier behaviour varies.")
-        RequirementCard("Local log time", "Diagnostic logs use the phone's regional timezone and show the UTC offset. If the phone is set to UTC/GMT but the SIM/network identifies a country with a single timezone, that regional timezone is used. Protocol event timestamps remain ISO 8601 UTC.")
-        RequirementCard("Heartbeat", "Heartbeat is optional and has its own on/off switch and complete HTTPS endpoint URL in Settings. When enabled, the app sends POST directly to that exact URL about every 60 seconds; it does not append a path or use the receiver base URL. When disabled, no heartbeat request is sent.")
-        RequirementCard("Security", "HTTPS only. Per-device bearer key encrypted with Android Keystore AES-GCM. The app can generate a random 256-bit device key; configure the same key and device UUID on the receiver server. The app sends no registration request. UUID device ID; no IMEI/IMSI. Queue payloads are encrypted at rest. Avoid storing SIM PINs or mobile-money PINs in sample JSON. Inputs are excluded from local logs.")
-        RequirementCard("Installation notice", "This app requests SMS and optional Accessibility capabilities for its core gateway functions. Google Play Protect may review installations from internet-sideloading sources because the app uses SMS and Accessibility capabilities. Install only builds from the trusted EUJOR repository; keep device protection enabled whenever possible.")
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("Application guide", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(
+            "The Android application is the device-side worker. The receiver server accepts third-party requests and queues them; the Android app retrieves each job and starts the operation using the phone's SIM.",
+            style = MaterialTheme.typography.bodyMedium
+        )
+
+        GuideSection("1. Request flow", listOf(
+            "Third-party application" to "Sends its request to the receiver server, for example POST /api/v1/requests. This endpoint belongs to the receiver server, not the Android app.",
+            "Receiver server" to "Validates the requesting application's credentials and payload, then stores a job in the device queue.",
+            "Android application" to "Polls GET /api/v1/agent/jobs/next, receives the queued job, and starts the SMS or USSD operation on the selected SIM. The server does not operate the SIM.",
+            "Result callback" to "The Android app sends progress and final results to POST /api/v1/agent/results. The receiver stores each event and confirms it."
+        ))
+
+        GuideSection("2. USSD queue behavior", listOf(
+            "No input chain" to "A missing, empty, or blank-only inputs array runs direct USSD through Android's TelephonyManager. It sends the code and receives one network response.",
+            "Input chain supplied" to "A non-empty list of strings opens the visible carrier USSD session. The app submits each string as the matching prompt appears.",
+            "Input format" to "Use a JSON array such as [\"1\", \"254712345678\"]. Blank entries are ignored. Do not add a fake value such as 0 to represent no input.",
+            "Accessibility" to "Interactive/chained USSD requires EUJOR USSD Session Assistant to be enabled in Android Accessibility settings. Direct USSD does not require it.",
+            "Final outcome" to "A completed callback means the USSD session ended. It does not by itself prove that a purchase, payment or subscription succeeded; inspect the returned carrier response."
+        ))
+
+        GuideSection("3. Application and device", listOf(
+            "App version" to "Version \${BuildConfig.VERSION_NAME} (version code \${BuildConfig.VERSION_CODE}).",
+            "Android version" to "Minimum Android 8.0 Oreo (API 26); compile SDK 36; target SDK 36.",
+            "Device identity" to "The app generates a UUID for the phone. IMEI and IMSI are not required.",
+            "SIM selection" to "Jobs specify sim_slot. The app uses that SIM slot to initiate the requested operation."
+        ))
+
+        GuideSection("4. Required permissions", listOf(
+            "SEND_SMS" to "Allows the app to send SMS messages through the selected SIM.",
+            "CALL_PHONE" to "Allows the app to start USSD sessions.",
+            "READ_PHONE_STATE" to "Allows SIM/subscription selection.",
+            "Notifications and foreground service" to "Keep the connection agent visible and running in the background.",
+            "USSD Accessibility" to "Reads visible carrier prompts and submits the supplied input chain for interactive USSD.",
+            "Internet" to "Connects to the receiver server and delivers result callbacks."
+        ))
+
+        GuideSection("5. Connection and endpoints", listOf(
+            "Receiver base URL" to "Configure the receiver's HTTPS base URL in Settings. The app appends the API routes shown on the API map.",
+            "Device API key" to "Use the device-specific bearer key and matching device UUID configured on the receiver server.",
+            "Job polling" to "While connected, the Android app repeatedly long-polls GET /api/v1/agent/jobs/next. The receiver returns a job or HTTP 204 when no job is waiting.",
+            "Health check" to "GET /api/v1/agent/health runs only when Test receiver server is tapped on Home.",
+            "Heartbeat" to "Optional. When enabled, the app POSTs to the complete HTTPS heartbeat URL saved in Settings, approximately once per minute."
+        ))
+
+        GuideSection("6. Callback delivery and confirmation", listOf(
+            "Event identity" to "Every result callback has a unique event_id.",
+            "Required acknowledgement" to "The receiver must first save the event, then return HTTP 200 with {\"success\":true,\"event_id\":\"<same event_id>\"}.",
+            "Retry policy" to "The app retries up to 6 times, 10 seconds apart; after a failed batch it waits 5 minutes before retrying.",
+            "Retention" to "Unconfirmed callbacks remain in the encrypted outbox for up to 12 hours. They are not deleted by the daily log cleanup.",
+            "Duplicate handling" to "The receiver must deduplicate by event_id and acknowledge a previously stored duplicate using the same event_id."
+        ))
+
+        GuideSection("7. Activity log and timestamps", listOf(
+            "Incoming requests" to "The Activity Log records remote jobs received from the receiver queue, including their type, action, job ID and request ID. USSD codes and input values are not logged.",
+            "Callback confirmation" to "The Activity Log records callback type and status after the receiver confirms the event with HTTP 200.",
+            "Regional time" to "Activity log timestamps and timestamps sent in callback/heartbeat payloads use the phone's detected regional timezone and include the UTC offset, for example +03:00."
+        ))
+
+        GuideSection("8. Security and privacy", listOf(
+            "Transport" to "Remote communication requires HTTPS with normal TLS certificate validation.",
+            "Stored data" to "Device configuration, queued jobs and callback events are encrypted at rest using Android Keystore-backed AES-GCM.",
+            "Credentials" to "Keep third-party application API keys separate from the Android device API key. Never put the device key in third-party requests.",
+            "Sensitive values" to "The app excludes SMS message bodies, USSD codes and input values from diagnostic logs. Avoid putting SIM or mobile-money PINs in input chains."
+        ))
+
+        GuideSection("9. Installation and operation", listOf(
+            "Install" to "Install the APK from the official EUJOR GitHub Releases page, then grant only the permissions needed for the features you use.",
+            "Enable the agent" to "Open the Android application, configure the receiver URL and device API key, grant the required permissions, then start the connection agent from Home.",
+            "Keep connected" to "Keep the phone powered, connected to the mobile network and online. Android battery management may restrict background operation.",
+            "Queue safety" to "Interrupted SMS/USSD jobs are not automatically replayed because repeating a SIM operation could cause duplicate messages or charges."
+        ))
+
         LinkButton("Open API protocol documentation") {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/eujor/smsgateway/blob/main/docs/API_PROTOCOL.md")))
         }
-        LinkButton("Check latest GitHub release / tag") {
+        LinkButton("Check latest GitHub release") {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/eujor/smsgateway/releases/latest")))
         }
         LinkButton("Open GitHub repository") {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/eujor/smsgateway")))
+        }
+    }
+}
+
+@Composable
+private fun GuideSection(title: String, items: List<Pair<String, String>>) {
+    Card {
+        Column(
+            Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            items.forEachIndexed { index, item ->
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(item.first, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    Text(item.second, style = MaterialTheme.typography.bodyMedium)
+                }
+                if (index < items.lastIndex) Divider()
+            }
         }
     }
 }
