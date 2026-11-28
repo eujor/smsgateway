@@ -4,6 +4,14 @@ EUJOR SMS & USSD Gateway is an Android SIM-agent application that connects a pho
 
 The app is backend-agnostic. A receiver can be written in PHP, Go, Python, Node.js, Java, or any language capable of implementing the documented HTTP/JSON API.
 
+## Understand the two components
+
+**Android app (the phone):** this is the SIM agent. It sends HTTP requests to the receiver server, polls for queued jobs, executes SMS/USSD through the phone's SIM, and posts result events. The Android app does not run an HTTP server and does not expose inbound API routes on the phone.
+
+**Receiver / SMS server (your hosting server):** this is the backend. It must implement the device routes called by the Android app, authenticate the device, queue SMS/USSD jobs, and durably store callback events. It may also expose a separate application API for systems such as billing, OTP or receipt software.
+
+The **API map** page inside the Android app lists every route the app calls, shows the complete URL after the receiver base URL is entered, and distinguishes the optional heartbeat URL.
+
 ## USSD server input, device result and acknowledgement
 
 This section is the quick integration guide for third-party receiver developers. The complete endpoint and protocol contract is in [docs/API_PROTOCOL.md](docs/API_PROTOCOL.md).
@@ -307,7 +315,7 @@ See [the callback acknowledgement contract](docs/API_PROTOCOL.md#12-device-resul
 | **Home** | Connect/disconnect controls, receiver status, device identity, permission indicators and setup shortcuts. |
 | **Tools** | JSON editor/validator, manual SMS/USSD trigger, quick USSD, input chains and session cancellation. |
 | **Logs** | Local diagnostic history, refresh and clear controls. |
-| **Requirements** | Android requirements, permissions, protocol inputs/outputs, security notes and API documentation link. |
+| **API map** | Editable base-URL preview with every Android-to-server endpoint, full URLs, HTTP methods, polling behaviour and copy buttons. |\n| **Guide** | Android requirements, permissions, protocol inputs/outputs, security notes and API documentation link. |
 | **Settings** | Receiver URL, device API key, show/hide, copy, generate/rotate key, device name and device UUID. |
 
 The Home screen shows setup status for runtime permissions, USSD Accessibility and battery optimisation exemption. Indicators distinguish enabled from missing permissions.
@@ -370,16 +378,19 @@ Official instructions: [Google — Use Play Protect to help keep your apps safe 
 
 ## Receiver server integration
 
-Implement the language-neutral contract in [docs/API_PROTOCOL.md](docs/API_PROTOCOL.md).
+Implement the language-neutral contract in [docs/API_PROTOCOL.md](docs/API_PROTOCOL.md). Configure the app's **receiver base URL** in Settings. The Android app appends the routes below to that base URL.
 
-The Android app expects the receiver to provide:
+| Receiver server route | Who calls it | Purpose |
+|---|---|---|
+| `GET /api/v1/agent/health` | Android app, only when the user taps **Test receiver server** on Home | Checks that the receiver server responds. It does not test the phone and is not hosted by Android. |
+| `GET /api/v1/agent/jobs/next?device_id=<UUID>&wait_seconds=3&limit=20` | Android app repeatedly while connected | Long-polls for jobs. The server should return a job immediately when one is available, otherwise HTTP 204 after the 3-second wait expires. The app immediately starts the next poll; this is not a fixed 3-second sleep between requests. |
+| `POST /api/v1/agent/results` | Android app after SMS/USSD activity | Receives result events. The server must durably store each event before acknowledging it. |
 
-- Receiver health check: `GET /api/v1/agent/health` is hosted by your receiver server. The Android app calls it when you use Test Connection; it checks the receiver server, not the phone/app. The app does not expose an inbound HTTP health endpoint.
-- Optional heartbeat: a complete HTTPS URL configured separately in Settings; when enabled, the app POSTs to that exact URL without appending a path or using the receiver URL.
-- Job polling: `GET /api/v1/agent/jobs/next`.
-- Result ingestion: `POST /api/v1/agent/results`.
+**Optional heartbeat is separate.** The user enters a complete HTTPS URL in Settings. When enabled, the app POSTs to that exact URL approximately once per minute; it does not append a path to the receiver base URL.
 
 The receiver must authenticate the device bearer key, bind it to the configured device UUID, validate job ownership and input fields, and record result events. For result ingestion, return HTTP 200 with `{"success":true,"event_id":"<matching event_id>"}` only after the event is durably recorded. Enforce a unique constraint/idempotency rule on `event_id`; keep deduplication records longer than the app's 12-hour retry lifetime (24 hours or longer is recommended).
+
+A separate route such as `POST /api/v1/requests` may be exposed by the receiver server for third-party applications to submit work. **That is not an Android app endpoint.** Third-party applications use their own application API keys; never expose or reuse the Android device key.
 
 Keep requesting-application API keys separate from Android device API keys. Do not accept arbitrary callback URLs from untrusted request bodies. Apply authorisation, rate limits, input validation and audit logging on the receiver.
 
@@ -406,7 +417,7 @@ Keep requesting-application API keys separate from Android device API keys. Do n
 
 ## Documentation
 
-- [API protocol v1](docs/API_PROTOCOL.md)
+- [API protocol v2](docs/API_PROTOCOL.md)
 - [GitHub repository](https://github.com/eujor/smsgateway)
 - [GitHub Releases](https://github.com/eujor/smsgateway/releases)
 

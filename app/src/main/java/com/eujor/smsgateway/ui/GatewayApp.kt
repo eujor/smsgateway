@@ -50,7 +50,7 @@ import java.util.concurrent.Executors
 import kotlinx.coroutines.delay
 
 private enum class MainTab(val label: String) {
-    HOME("Home"), TOOLS("Tools"), LOGS("Logs"), REQUIREMENTS("Requirements")
+    HOME("Home"), TOOLS("Tools"), LOGS("Logs"), API("API map"), REQUIREMENTS("Guide")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -234,6 +234,7 @@ fun GatewayApp() {
                         MainTab.HOME -> Icons.Filled.Home
                         MainTab.TOOLS -> Icons.Filled.Terminal
                         MainTab.LOGS -> Icons.Filled.ListAlt
+                        MainTab.API -> Icons.Filled.Link
                         MainTab.REQUIREMENTS -> Icons.Filled.Info
                     }
                     NavigationBarItem(
@@ -273,6 +274,7 @@ fun GatewayApp() {
                     onRefresh = { refreshLogs() },
                     onClear = { LogStore.clear(context); refreshLogs() }
                 )
+                MainTab.API -> ApiMapScreen(config)
                 MainTab.REQUIREMENTS -> RequirementsScreen()
             }
         }
@@ -371,34 +373,44 @@ private fun HomeScreen(
                     }
                     Spacer(Modifier.weight(1f))
                     if (agentConnected) {
-                        Button(onClick = onConnect, colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF16803C))) { Text("Connect") }
-                    } else OutlinedButton(onClick = onConnect) { Text("Connect") }
-                    if (!agentConnected) {
-                        Button(onClick = onDisconnect, colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFFB3261E))) { Text("Disconnect") }
-                    } else OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
+                        Button(
+                            onClick = onDisconnect,
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Icon(Icons.Filled.PowerSettingsNew, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Disconnect")
+                        }
+                    } else {
+                        Button(onClick = onConnect) {
+                            Icon(Icons.Filled.Power, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Connect")
+                        }
+                    }
                 }
             }
         }
-        Card {
-            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Unconfirmed USSD callbacks", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("All USSD callbacks awaiting server acknowledgement, including screen updates. Kill stops future retries for that event.", style = MaterialTheme.typography.bodySmall)
-                if (pendingUssdCallbacks.isEmpty()) Text("No unconfirmed USSD callbacks.")
-                pendingUssdCallbacks.forEach { item ->
-                    Divider()
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text("Status: ${item.status} · retry attempts: ${item.attempts}/6", fontWeight = FontWeight.SemiBold)
-                            Text("Job: ${item.jobId} · Request: ${item.requestId}", style = MaterialTheme.typography.bodySmall)
-                            Text("Event: ${item.eventId}", style = MaterialTheme.typography.labelSmall)
+        if (pendingUssdCallbacks.isNotEmpty()) {
+            Card {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Unconfirmed USSD callbacks", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("These events are awaiting the receiver server's acknowledgement. Stop retries to discard future delivery attempts for that event.", style = MaterialTheme.typography.bodySmall)
+                    pendingUssdCallbacks.forEach { item ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("${item.status} · attempts ${item.attempts}/6", fontWeight = FontWeight.SemiBold)
+                                Text("Job: ${item.jobId} · Request: ${item.requestId}", style = MaterialTheme.typography.bodySmall)
+                                Text("Event: ${item.eventId}", style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(onClick = { onKillPendingUssd(item.eventId) }) { Text("Stop retries") }
                         }
-                        TextButton(onClick = { onKillPendingUssd(item.eventId) }) { Text("Kill") }
                     }
                 }
             }
         }
         StatusCard("Receiver server", serverStatus, Icons.Filled.Cloud)
-        StatusCard("Device identity", config.deviceName + "\n" + config.deviceId, Icons.Filled.Devices)
+        DeviceIdentityCard(config.deviceName, config.deviceId)
         StatusCard("Runtime permissions", "$granted of ${permissions.size} granted", Icons.Filled.Security, granted == permissions.size)
         StatusCard("USSD accessibility", if (accessibility) "Enabled" else "Needs activation", Icons.Filled.PhoneAndroid, accessibility)
         StatusCard("Battery optimisation", if (batteryAllowed) "Exemption active" else "May restrict background service", Icons.Filled.BatteryChargingFull, batteryAllowed)
@@ -459,6 +471,32 @@ private fun HomeScreen(
         }
         Text("Latest activity: " + activityStatus, style = MaterialTheme.typography.bodyMedium)
         Text("Keep the phone powered, online and connected to the mobile network while the gateway is active.", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun DeviceIdentityCard(deviceName: String, deviceId: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    Card {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Filled.Devices, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(27.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("Device identity", style = MaterialTheme.typography.labelLarge)
+                Text(deviceName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(deviceId, style = MaterialTheme.typography.bodySmall)
+            }
+            IconButton(onClick = {
+                clipboard.setPrimaryClip(ClipData.newPlainText("Device ID", deviceId))
+                Toast.makeText(context, "Device ID copied.", Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy device ID")
+            }
+        }
     }
 }
 
@@ -640,16 +678,145 @@ private fun LogsScreen(logs: List<String>, onRefresh: () -> Unit, onClear: () ->
 }
 
 @Composable
+private fun ApiMapScreen(config: AppConfig) {
+    var baseUrl by remember(config.serverUrl) { mutableStateOf(config.serverUrl) }
+    val base = baseUrl.trim().trimEnd('/')
+    val validBase = base.startsWith("https://", true)
+    val pollUrl = if (validBase) {
+        "$base/api/v1/agent/jobs/next?device_id=${config.deviceId}&wait_seconds=3&limit=20"
+    } else ""
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("Receiver API map", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(
+            "These are the HTTP routes the Android app calls. Your receiver/SMS server must implement them; the Android app does not host these routes.",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = { baseUrl = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Receiver base URL") },
+            placeholder = { Text("https://gateway.example.com") },
+            singleLine = true,
+            trailingIcon = {
+                IconButton(onClick = { baseUrl = config.serverUrl }) {
+                    Icon(Icons.Filled.Restore, contentDescription = "Use configured receiver URL")
+                }
+            }
+        )
+        Text(
+            "Preview only. The live connection uses the URL saved in Settings. Enter a base URL here to see the exact paths the app will append.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        if (!validBase) {
+            Text("Enter a valid HTTPS base URL to build the endpoint list.", color = MaterialTheme.colorScheme.error)
+        } else {
+            ApiEndpointCard(
+                title = "1. Server test — Home button",
+                method = "GET",
+                url = "$base/api/v1/agent/health",
+                detail = "Called only when the user taps Test receiver server on Home. The response confirms that the receiver server is responding; it does not test the phone."
+            )
+            ApiEndpointCard(
+                title = "2. Job polling — while connected",
+                method = "GET",
+                url = pollUrl,
+                detail = "The Android agent holds this long-poll request for up to 3 seconds. If a job is available, the server returns it immediately. If no job is returned, the app immediately starts the next poll; 3 seconds is not a fixed delay between requests."
+            )
+            ApiEndpointCard(
+                title = "3. Result callbacks — Android to server",
+                method = "POST",
+                url = "$base/api/v1/agent/results",
+                detail = "The app posts SMS and USSD result events here. The receiver must save each event before responding with HTTP 200 and JSON {success:true,event_id:<same event_id>}."
+            )
+        }
+
+        Text("Separate endpoint", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        if (config.heartbeatEnabled && config.heartbeatUrl.isNotBlank()) {
+            ApiEndpointCard(
+                title = "Optional heartbeat — independent URL",
+                method = "POST",
+                url = config.heartbeatUrl,
+                detail = "Sent approximately once per minute only when Heartbeat is enabled. This complete URL is used exactly as entered; no path is appended to the receiver base URL."
+            )
+        } else {
+            RequirementCard(
+                "Optional heartbeat — disabled",
+                "Heartbeat is off or has no URL. It is not sent. When enabled, the app POSTs to the complete HTTPS URL entered in Settings, independently of the receiver base URL."
+            )
+        }
+
+        RequirementCard(
+            "Not called by the Android app",
+            "A receiver may also expose POST /api/v1/requests for third-party systems such as billing, OTP or receipt applications. That is an API hosted by the receiver server for those applications. The Android app does not call it; it obtains device jobs through the polling route above."
+        )
+        RequirementCard(
+            "Request authentication",
+            "Device requests use Authorization: Bearer <DEVICE_API_KEY> and X-Device-ID: <DEVICE_UUID>. Keep this device key separate from any API key issued to third-party applications."
+        )
+    }
+}
+
+@Composable
+private fun ApiEndpointCard(title: String, method: String, url: String, detail: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    Card {
+        Column(
+            Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Text(
+                        method,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+                Spacer(Modifier.width(9.dp))
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
+            Text(url, style = MaterialTheme.typography.bodySmall)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                OutlinedButton(onClick = {
+                    clipboard.setPrimaryClip(ClipData.newPlainText(title, url))
+                    Toast.makeText(context, "Endpoint URL copied.", Toast.LENGTH_SHORT).show()
+                }) {
+                    Icon(Icons.Filled.ContentCopy, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Copy endpoint")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun RequirementsScreen() {
+
     val context = androidx.compose.ui.platform.LocalContext.current
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("Requirements & protocol", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text("App & server guide", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        RequirementCard("Two separate components", "ANDROID APP: runs on the phone, uses its SIM to send SMS or execute USSD, polls the receiver server for jobs, and posts result callbacks. RECEIVER / SMS SERVER: runs on your hosting server, exposes the routes shown on the API map, authenticates the phone, queues jobs, and stores callbacks. The Android app does not host inbound HTTP endpoints.")
         RequirementCard("Application", "Version ${BuildConfig.VERSION_NAME} (version code ${BuildConfig.VERSION_CODE})\nMinimum Android: Android 8.0 Oreo (API 26)\nCompile SDK: 36\nTarget SDK: 36\nDevice identity: app-generated UUID; IMEI/IMSI not required.")
         RequirementCard("Permissions", "SMS send: SEND_SMS\nUSSD / call chain: CALL_PHONE\nSIM selection: READ_PHONE_STATE\nBackground agent: foreground service and notifications\nMulti-step USSD: enable EUJOR USSD Session Assistant in Android Accessibility settings.")
-        RequirementCard("Server → app input", "SMS: type=sms, action=send, to and message. USSD: type=ussd, action=execute, code and unique tracking_id. Optional inputs is an array of strings entered one prompt at a time with a 2-second minimum delay. Continuation and cancellation must repeat the same tracking_id and session_id.")
-        RequirementCard("App → server output", "Every callback has a unique event_id. The receiver MUST return HTTP 200 with JSON {success:true,event_id:<same event_id>} to confirm receipt. HTTP 202, other status codes, missing JSON or mismatched event_id are not accepted. The encrypted outbox retries up to 6 times, 10 seconds apart, then waits 5 minutes before another batch; restored connectivity triggers an immediate retry. Events expire after 12 hours. Pending callbacks are separate from 02:00 log/job maintenance and are not truncated by it. Receiver must deduplicate event_id.")
+        RequirementCard("Receiver server → Android app", "The receiver server returns queued SMS or USSD jobs in response to the Android app's GET /api/v1/agent/jobs/next long-poll. It returns a job immediately when one is available, or HTTP 204 when the poll times out without a job. USSD inputs are strings entered one prompt at a time.")
+        RequirementCard("Android app → receiver server", "The app calls GET /api/v1/agent/health only when Test receiver server is tapped on Home; it continuously polls GET /api/v1/agent/jobs/next with wait_seconds=3 while connected; and it POSTs result events to /api/v1/agent/results. See the API map page for full URLs based on the configured base URL.")
+        RequirementCard("Result acknowledgement from receiver server", "Every callback has a unique event_id. The receiver MUST return HTTP 200 with JSON {success:true,event_id:<same event_id>} to confirm receipt. HTTP 202, other status codes, missing JSON or mismatched event_id are not accepted. The encrypted outbox retries up to 6 times, 10 seconds apart, then waits 5 minutes before another batch; restored connectivity triggers an immediate retry. Events expire after 12 hours. Pending callbacks are separate from 02:00 log/job maintenance and are not truncated by it. Receiver must deduplicate event_id.")
         RequirementCard("USSD modes", "Direct mode uses TelephonyManager.sendUssdRequest() for a single request and response. Chained mode opens the visible carrier USSD dialog and enters each queued response with a 2-second minimum interval. Every server-triggered USSD callback carries its tracking_id. OEM and carrier behaviour varies.")
-        RequirementCard("Heartbeat", "Heartbeat is optional and has its own on/off switch and complete HTTPS endpoint URL in Settings. When enabled, the app sends POST directly to that exact URL about every 60 seconds; it does not append a path or use the SMS receiver URL. When disabled, no heartbeat request is sent.")
+        RequirementCard("Local log time", "Diagnostic logs use the phone's regional timezone and show the UTC offset. If the phone is set to UTC/GMT but the SIM/network identifies a country with a single timezone, that regional timezone is used. Protocol event timestamps remain ISO 8601 UTC.")
+        RequirementCard("Heartbeat", "Heartbeat is optional and has its own on/off switch and complete HTTPS endpoint URL in Settings. When enabled, the app sends POST directly to that exact URL about every 60 seconds; it does not append a path or use the receiver base URL. When disabled, no heartbeat request is sent.")
         RequirementCard("Security", "HTTPS only. Per-device bearer key encrypted with Android Keystore AES-GCM. The app can generate a random 256-bit device key; configure the same key and device UUID on the receiver server. The app sends no registration request. UUID device ID; no IMEI/IMSI. Queue payloads are encrypted at rest. Avoid storing SIM PINs or mobile-money PINs in sample JSON. Inputs are excluded from local logs.")
         RequirementCard("Installation notice", "This app requests SMS and optional Accessibility capabilities for its core gateway functions. Google Play Protect may review installations from internet-sideloading sources because the app uses SMS and Accessibility capabilities. Install only builds from the trusted EUJOR repository; keep device protection enabled whenever possible.")
         LinkButton("Open API protocol documentation") {
@@ -692,6 +859,7 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
     var heartbeatUrl by remember { mutableStateOf(initial.heartbeatUrl) }
     var heartbeatEnabled by remember { mutableStateOf(initial.heartbeatEnabled) }
     var showKey by remember { mutableStateOf(false) }
+    var confirmRegenerateDeviceId by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val context = androidx.compose.ui.platform.LocalContext.current
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -763,8 +931,24 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
                     style = MaterialTheme.typography.bodySmall
                 )
                 OutlinedTextField(deviceName, { deviceName = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Device name") }, singleLine = true)
-                OutlinedTextField(deviceId, { deviceId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Device ID (UUID)") }, singleLine = true)
-                TextButton(onClick = { deviceId = com.eujor.smsgateway.data.UuidV7.generate() }) { Text("Generate new device ID") }
+                OutlinedTextField(
+                    value = deviceId,
+                    onValueChange = {},
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Device ID (UUID)") },
+                    singleLine = true,
+                    readOnly = true,
+                    trailingIcon = {
+                        IconButton(onClick = {
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Device ID", deviceId))
+                            Toast.makeText(context, "Device ID copied.", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(Icons.Filled.ContentCopy, contentDescription = "Copy device ID")
+                        }
+                    }
+                )
+                Text("This app-generated ID is read-only. Copy it to register the phone on your receiver server.", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { confirmRegenerateDeviceId = true }) { Text("Regenerate device ID") }
                 if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
             }
         },
@@ -779,4 +963,23 @@ private fun SettingsDialog(initial: AppConfig, onDismiss: () -> Unit, onSave: (A
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+
+    if (confirmRegenerateDeviceId) {
+        AlertDialog(
+            onDismissRequest = { confirmRegenerateDeviceId = false },
+            title = { Text("Regenerate device ID?") },
+            text = {
+                Text("This creates a new device identity. You must update the device ID/key binding on the receiver server before reconnecting. The current ID will no longer be used by this app.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    deviceId = com.eujor.smsgateway.data.UuidV7.generate()
+                    confirmRegenerateDeviceId = false
+                }) { Text("Generate new ID") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRegenerateDeviceId = false }) { Text("Keep current ID") }
+            }
+        )
+    }
 }

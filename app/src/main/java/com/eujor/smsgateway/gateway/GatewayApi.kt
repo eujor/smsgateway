@@ -43,7 +43,7 @@ object GatewayApi {
 
     fun nextJobs(config: AppConfig): List<JSONObject> {
         val device = URLEncoder.encode(config.deviceId, Charsets.UTF_8.name())
-        val response = request(config, "/api/v1/agent/jobs/next?device_id=" + device + "&wait_seconds=20&limit=20", "GET", null, 25_000)
+        val response = request(config, "/api/v1/agent/jobs/next?device_id=" + device + "&wait_seconds=3&limit=20", "GET", null, 25_000)
         if (response.first == 204 || response.second.isBlank()) return emptyList()
         val json = JSONObject(response.second)
         val batch = json.optJSONArray("jobs")

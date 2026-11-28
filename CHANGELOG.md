@@ -2,6 +2,15 @@
 
 All notable changes are documented here.
 
+## [2.1.0] - 2026-11-28
+
+- Reduced the Android agent's job long-poll timeout from 20 seconds to 3 seconds; the app immediately re-polls after an empty response.
+- Added an in-app API map that builds copyable receiver endpoint URLs from an entered base URL and explains which component calls each route.
+- Reworked the app's colour palette, card shapes and connection controls; the Home page now shows only the action appropriate to the current connection state.
+- Made the app-generated device UUID read-only and copyable on Home and Settings; regeneration now requires explicit confirmation.
+- Clarified in the README and protocol guide which endpoints are hosted by the receiver server, which calls them, and which optional heartbeat URL is independent.
+- Updated local diagnostics to use the detected regional timezone when the SIM/network country maps unambiguously to one timezone; log timestamps include their UTC offset while protocol timestamps remain UTC.
+
 ## [2.0.0] - 2026-11-28
 
 - Added strict USSD callback forwarding: only USSD activity initiated by the app or by server-triggered USSD jobs is reported; ordinary incoming SMS is never forwarded.

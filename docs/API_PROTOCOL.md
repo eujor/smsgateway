@@ -2,6 +2,26 @@
 
 This language-neutral contract connects the Android SIM agent to any self-hosted receiver server (PHP, Go, Python, Node.js, Java, etc.).
 
+## Roles and URL ownership
+
+There are two separate programs:
+
+- **Android app:** installed on the phone. It is an HTTP client and SIM agent. It makes outbound HTTPS requests; it does not host an HTTP server, so there is no Android-side URL for the receiver to call.
+- **Receiver / SMS server:** installed on your hosting server. It hosts the device API routes below, authenticates the Android app, queues SMS/USSD jobs, and stores the app's result callbacks.
+
+The Android app appends these paths to the **Receiver base URL** saved in Settings:
+
+| Method and path | Called by the Android app when | Receiver server must |
+|---|---|---|
+| `GET /api/v1/agent/health` | The user taps **Test receiver server** on the Home page | Authenticate the device and return the health response. |
+| `GET /api/v1/agent/jobs/next?device_id=<UUID>&wait_seconds=3&limit=20` | The agent is connected; this request is repeated continuously | Hold the long-poll for up to 3 seconds, return a job immediately when available, or HTTP 204 when the wait expires. |
+| `POST /api/v1/agent/results` | The Android app has an SMS/USSD event to report | Durably store the event, then return the exact acknowledgement described in section 12. |
+
+**Heartbeat is not part of the base-URL route list.** It is an optional POST to a separate complete HTTPS URL entered in Settings. The app uses that URL exactly as entered and does not append a path.
+
+The receiver server may expose another API, such as `POST /api/v1/requests`, for third-party applications to submit work. That API belongs to the receiver server and is called by those applications, not by the Android app. See section 3.
+
+
 ## 1. Two separate trust relationships
 
 A compatible backend has two independent API surfaces:
@@ -23,9 +43,9 @@ Never reuse or expose the Android device key to a requesting application. Never 
   - `Accept: application/json`
 - Bind each key to one configured device and its allowed capabilities. Support key rotation and revocation.
 
-## 3. Requesting application API
+## 3. Requesting application API (receiver server endpoint)
 
-The backend publishes a separate API for applications that want to send SMS or initiate USSD. An application has its own key and server-side permissions.
+This API is implemented and hosted by the **receiver server** for billing platforms, OTP systems and other third-party applications. It is not called by the Android app. An application has its own key and server-side permissions, separate from the Android device key.
 
 ### Submit an SMS request
 
@@ -136,7 +156,7 @@ The Android app does not call a device-registration endpoint. Before connecting,
 
 ## 5. Receiver server health check
 
-`GET /api/v1/agent/health` is an endpoint hosted by the **receiver server**. The Android app sends this GET request when the user selects **Test Connection**. It checks whether the receiver server responds; it does not check the Android app's reachability and is not an inbound endpoint on the phone.
+`GET /api/v1/agent/health` is an endpoint hosted by the **receiver server**. The Android app sends this GET request only when the user selects **Test receiver server** on the Home page. It checks whether the receiver server responds; it does not check the Android app's reachability and is not an inbound endpoint on the phone.
 
 The receiver should authenticate the device key and return HTTP 200:
 ```json
@@ -155,9 +175,9 @@ The POST JSON body contains `device_id`, `device_name`, `app_version`, `android_
 
 ## 7. Device job polling
 
-`GET /api/v1/agent/jobs/next?device_id=<UUID>&wait_seconds=20&limit=20`
+`GET /api/v1/agent/jobs/next?device_id=<UUID>&wait_seconds=3&limit=20`
 
-This is short HTTPS long-polling. Return HTTP 204 if there is no job, or HTTP 200:
+This is HTTPS long-polling. The Android app sets `wait_seconds=3` and immediately starts another poll when the current poll returns without a job; it does not sleep for 3 seconds between polls. The receiver should return a job as soon as one is available, or HTTP 204 when the 3-second wait expires. Return HTTP 200 with a job (or a `jobs` array of up to 20 jobs):
 ```json
 {
   "job": {
@@ -312,7 +332,7 @@ Do not include secrets or sensitive request values in error bodies.
 - Only one telephony operation is dispatched at a time. SMS holds the execution slot until Android reports `sent` or `send_failed`, with a 120-second fallback timeout if no send result arrives; a later delivery report does not hold the queue. An active USSD session holds the execution slot until its dialog closes, the user cancels, or its 120-second session timeout expires. Only `continue` and `cancel` jobs for that same session can run while the session is active. Manual USSD and SMS operations in the app use the same in-process slot guard while the gateway service is running.
 - The queue enforces uniqueness for both `job_id` and `request_id`. Completed records remain available for duplicate protection for 30 days.
 - If Android or the app restarts while a telephony operation is marked `processing`, the row is marked `failed` and is not replayed automatically. Automatically resending a possibly submitted SMS or repeating a chargeable USSD operation could create duplicate effects. A new request must be submitted after checking the outcome.
-- Daily maintenance runs after 02:00 local device time. It deletes terminal queue records older than 30 days and diagnostic log entries older than 7 days. If the phone was off at 02:00, maintenance runs on the next app or gateway-service start. SQLite primary identifiers are not reset or reused.
+- Daily maintenance runs after 02:00 local device time. It deletes terminal queue records older than 30 days and diagnostic log entries older than 7 days. If the phone was off at 02:00, maintenance runs on the next app or gateway-service start. Local diagnostic log timestamps use the phone's regional timezone and include the UTC offset; if the phone timezone is UTC/GMT but the SIM/network country has exactly one timezone, that regional timezone is used. Countries with multiple timezones retain the phone's configured timezone. API event timestamps remain ISO 8601 UTC. SQLite primary identifiers are not reset or reused.
 - Ordinary incoming SMS is never forwarded. USSD callbacks are correlated by tracking_id; the receiver must deduplicate event_id.
 
 
