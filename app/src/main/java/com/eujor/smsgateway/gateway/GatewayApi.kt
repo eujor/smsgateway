@@ -11,7 +11,6 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.time.Instant
 
 object GatewayApi {
     fun remoteConfigured(config: AppConfig): Boolean =
@@ -26,7 +25,7 @@ object GatewayApi {
         return "Receiver server responded (HTTP " + response.first + ")."
     }
 
-    fun heartbeat(config: AppConfig) {
+    fun heartbeat(context: Context, config: AppConfig) {
         if (!config.heartbeatEnabled) return
         val endpoint = config.heartbeatUrl.trim()
         if (!endpoint.startsWith("https://", true)) {
@@ -37,7 +36,7 @@ object GatewayApi {
             .put("device_name", config.deviceName)
             .put("app_version", BuildConfig.VERSION_NAME)
             .put("android_sdk", Build.VERSION.SDK_INT)
-            .put("timestamp", Instant.now().toString())
+            .put("timestamp", LogStore.regionalTimestamp(context))
         requestUrl(config, endpoint, "POST", body, 10_000)
     }
 
@@ -72,11 +71,11 @@ object GatewayApi {
 
     private fun queueResult(context: Context, config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject) {
         if (!remoteConfigured(config)) return
-        val body = resultEnvelope(config, jobId, requestId, type, status, result)
+        val body = resultEnvelope(context, config, jobId, requestId, type, status, result)
         val outbox = ResultOutbox(context)
         try {
             val eventId = outbox.enqueue(config, body)
-            LogStore.append(context, "Callback event queued locally: " + eventId)
+            LogStore.append(context, "Callback queued: type=" + type + " status=" + status + " job_id=" + jobId + " event_id=" + eventId)
         } finally {
             outbox.close()
         }
@@ -101,7 +100,7 @@ object GatewayApi {
         }
     }
 
-    private fun resultEnvelope(config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject) =
+    private fun resultEnvelope(context: Context, config: AppConfig, jobId: String, requestId: String, type: String, status: String, result: JSONObject) =
         JSONObject()
             .put("protocol_version", "1")
             .put("device_id", config.deviceId)
@@ -111,7 +110,7 @@ object GatewayApi {
             .put("type", type)
             .put("status", status)
             .put("result", result)
-            .put("timestamp", Instant.now().toString())
+            .put("timestamp", LogStore.regionalTimestamp(context))
 
     private fun request(config: AppConfig, path: String, method: String, body: JSONObject?, timeoutMs: Int): Pair<Int, String> {
         val base = config.serverUrl.trim().trimEnd('/')
