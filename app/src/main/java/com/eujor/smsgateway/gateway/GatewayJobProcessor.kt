@@ -52,9 +52,7 @@ object GatewayJobProcessor {
                 type == "ussd" && action == "execute" -> {
                     val code = job.optString("code")
                     require(code.startsWith("*") && code.endsWith("#")) { "Invalid USSD code." }
-                    // Match the app's optional-chain behavior: blank entries are ignored.
-                    // An empty chain means direct USSD; a populated chain means interactive USSD.
-                    val inputs = readInputs(job.optJSONArray("inputs")).filter { it.isNotBlank() }
+                    val inputs = readInputs(job.optJSONArray("inputs"))
                     require(ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
                         "Phone permission is required for USSD."
                     }
@@ -68,9 +66,8 @@ object GatewayJobProcessor {
                             "Enable EUJOR USSD Session Assistant before chained USSD."
                         }
                         UssdExecutor.startInteractive(context, code, simSlot)
-                        LogStore.append(context, "Started interactive USSD job " + jobId + " with " + inputs.size + " queued inputs; values redacted.")
+                        LogStore.append(context, "Started chained USSD job " + jobId + " with " + inputs.size + " queued inputs.")
                     } else {
-                        LogStore.append(context, "Started direct USSD job " + jobId + " with no input chain.")
                         UssdExecutor.sendDirect(context, config, jobId, requestId, code, simSlot, UssdChainState.trackingId)
                     }
                     return JobProcessOutcome.WAITING_FOR_USSD
