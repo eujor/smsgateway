@@ -116,7 +116,7 @@ A direct USSD completion event looks like this:
     "response": "Your balance is KES 125.00",
     "sim_slot": 1
   },
-  "timestamp": "2026-11-27T18:30:05Z"
+  "timestamp": "2026-11-27T21:30:05+03:00"
 }
 ```
 
@@ -135,7 +135,7 @@ For an interactive session, the phone can send several events. For example, a sc
     "session_id": "active-ussd-session-id",
     "response": "1. Check balance\n2. Buy bundle\n3. Exit"
   },
-  "timestamp": "2026-11-27T18:31:00Z"
+  "timestamp": "2026-11-27T21:31:00+03:00"
 }
 ```
 
