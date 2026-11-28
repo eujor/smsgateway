@@ -2,6 +2,7 @@ package com.eujor.smsgateway.data
 
 import android.content.Context
 import android.telephony.TelephonyManager
+import android.icu.util.TimeZone as IcuTimeZone
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -80,7 +81,7 @@ object LogStore {
 
         if (systemIsUtc && !country.isNullOrBlank()) {
             val countryZones = runCatching {
-                TimeZone.getAvailableIDs(country.uppercase(Locale.ROOT))
+                IcuTimeZone.getAvailableIDs(country.uppercase(Locale.ROOT))
                     .mapNotNull { id -> runCatching { ZoneId.of(id) }.getOrNull() }
                     .distinct()
             }.getOrDefault(emptyList())
