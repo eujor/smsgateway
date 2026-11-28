@@ -315,7 +315,8 @@ See [the callback acknowledgement contract](docs/API_PROTOCOL.md#12-device-resul
 | **Home** | Connect/disconnect controls, receiver status, device identity, permission indicators and setup shortcuts. |
 | **Tools** | JSON editor/validator, manual SMS/USSD trigger, quick USSD, input chains and session cancellation. |
 | **Logs** | Local diagnostic history, refresh and clear controls. |
-| **API map** | Editable base-URL preview with every Android-to-server endpoint, full URLs, HTTP methods, polling behaviour and copy buttons. |\n| **Guide** | Android requirements, permissions, protocol inputs/outputs, security notes and API documentation link. |
+| **API map** | Editable base-URL preview with every Android-to-server endpoint, full URLs, HTTP methods, polling behaviour and copy buttons. |
+| **Guide** | Android requirements, permissions, protocol inputs/outputs, security notes and API documentation link. |
 | **Settings** | Receiver URL, device API key, show/hide, copy, generate/rotate key, device name and device UUID. |
 
 The Home screen shows setup status for runtime permissions, USSD Accessibility and battery optimisation exemption. Indicators distinguish enabled from missing permissions.
