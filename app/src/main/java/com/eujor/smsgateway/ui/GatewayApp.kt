@@ -842,7 +842,7 @@ private fun RequirementsScreen() {
         ))
 
         GuideSection("3. Application and device", listOf(
-            "App version" to "Version \${BuildConfig.VERSION_NAME} (version code \${BuildConfig.VERSION_CODE}).",
+            "App version" to "Version ${BuildConfig.VERSION_NAME} (version code ${BuildConfig.VERSION_CODE}).",
             "Android version" to "Minimum Android 8.0 Oreo (API 26); compile SDK 36; target SDK 36.",
             "Device identity" to "The app generates a UUID for the phone. IMEI and IMSI are not required.",
             "SIM selection" to "Jobs specify sim_slot. The app uses that SIM slot to initiate the requested operation."
