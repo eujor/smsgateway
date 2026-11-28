@@ -16,6 +16,9 @@ object LogStore {
     private const val MAX_LINES = 300
     private val logTimeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss XXX", Locale.US)
 
+    fun regionalTimestamp(context: Context): String =
+        DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(detectedZone(context)).format(Instant.now())
+
     fun append(context: Context, message: String) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val timestamp = logTimeFormat.withZone(detectedZone(context)).format(Instant.now())
