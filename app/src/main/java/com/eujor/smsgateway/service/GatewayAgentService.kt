@@ -78,7 +78,7 @@ class GatewayAgentService : Service() {
                 try {
                     if (config.heartbeatEnabled && config.heartbeatUrl.isNotBlank() &&
                         System.currentTimeMillis() - lastHeartbeat > 60_000) {
-                        GatewayApi.heartbeat(config)
+                        GatewayApi.heartbeat(this, config)
                         lastHeartbeat = System.currentTimeMillis()
                     }
                     if (config.serverUrl.isBlank()) {
@@ -203,7 +203,14 @@ class GatewayAgentService : Service() {
     private fun enqueueRemoteJobs(queue: LocalJobQueue, config: com.eujor.smsgateway.data.AppConfig) {
         GatewayApi.nextJobs(config).forEach { job ->
             when (queue.enqueue(job)) {
-                QueueInsertResult.ADDED -> LogStore.append(this, "Remote job stored in local queue: " + job.optString("job_id"))
+                QueueInsertResult.ADDED -> LogStore.append(
+                    this,
+                    "Remote request received and queued: type=" + job.optString("type", "unknown").lowercase() +
+                        " action=" + job.optString("action", "execute").lowercase() +
+                        " job_id=" + job.optString("job_id") +
+                        " request_id=" + job.optString("request_id") +
+                        "; USSD codes and input values redacted."
+                )
                 QueueInsertResult.DUPLICATE -> LogStore.append(this, "Duplicate remote job ignored: " + job.optString("job_id"))
                 QueueInsertResult.FULL -> {
                     LogStore.append(this, "Local request queue is full; remote job rejected: " + job.optString("job_id"))
