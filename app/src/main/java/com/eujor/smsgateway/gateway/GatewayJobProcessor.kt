@@ -33,11 +33,7 @@ object GatewayJobProcessor {
             require(simSlot in 1..4) { "Remote job sim_slot must be between 1 and 4." }
             val expiresAt = job.optString("expires_at")
             if (expiresAt.isNotBlank()) {
-                val expiry = runCatching {
-                    java.time.Instant.parse(expiresAt)
-                }.getOrElse {
-                    java.time.OffsetDateTime.parse(expiresAt).toInstant()
-                }
+                val expiry = java.time.Instant.parse(expiresAt)
                 require(expiry.isAfter(java.time.Instant.now())) { "Remote job has expired." }
             }
 
